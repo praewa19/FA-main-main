@@ -508,7 +508,7 @@ const Dashboard = memo(function Dashboard({ user, summary, activeTab, isTabPendi
 
       <div className={`tab-panel ${isTabPending ? "pending" : ""}`}>
         {activeTab === "settings" ? (
-          <SettingsPage user={user} profile={profile} onDone={onDone} />
+          <SettingsPage user={user} profile={profile} income={income} onDone={onDone} />
         ) : activeTab === "budget" ? (
           <BudgetManagementPage categories={categories} chartData={chartData} pieData={pieData} ranking={ranking} onDone={onDone} />
         ) : (
@@ -1064,16 +1064,28 @@ const HabitPanel = memo(function HabitPanel({ categories }) {
   );
 });
 
-const SettingsPage = memo(function SettingsPage({ user, profile, onDone }) {
-  const [form, setForm] = useState({ name: profile?.name || "", email: user?.email || "", password: "" });
+const SettingsPage = memo(function SettingsPage({ user, profile, income, onDone }) {
+  const [form, setForm] = useState({
+    name: profile?.name || "",
+    email: user?.email || "",
+    password: "",
+    incomePeriod: income?.period || "monthly",
+    incomeAmount: income?.amount ? String(income.amount) : "",
+  });
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
-    setForm({ name: profile?.name || "", email: user?.email || "", password: "" });
-  }, [profile, user]);
+    setForm({
+      name: profile?.name || "",
+      email: user?.email || "",
+      password: "",
+      incomePeriod: income?.period || "monthly",
+      incomeAmount: income?.amount ? String(income.amount) : "",
+    });
+  }, [income, profile, user]);
 
   async function submit(event) {
     event.preventDefault();
@@ -1085,6 +1097,8 @@ const SettingsPage = memo(function SettingsPage({ user, profile, onDone }) {
         name: form.name.trim(),
         email: form.email.trim() === user?.email ? "" : form.email.trim(),
         password: form.password,
+        incomePeriod: form.incomePeriod,
+        incomeAmount: Number(form.incomeAmount),
       };
       const result = await api("/api/profile", { method: "PATCH", body: JSON.stringify(payload) });
       setMessage(result.message);
@@ -1103,7 +1117,7 @@ const SettingsPage = memo(function SettingsPage({ user, profile, onDone }) {
         <div className="section-heading">
           <div>
             <h2>Profile Settings</h2>
-            <p className="hint">Update your profile name and account credentials.</p>
+            <p className="hint">Update your profile, income, and account credentials.</p>
           </div>
           <Settings size={20} />
         </div>
@@ -1116,6 +1130,16 @@ const SettingsPage = memo(function SettingsPage({ user, profile, onDone }) {
             <div className="field">
               <label>Email</label>
               <input type="email" value={form.email} onChange={(event) => setForm({ ...form, email: event.target.value })} required />
+            </div>
+          </div>
+          <div className="field">
+            <label>Income</label>
+            <div className="grid-2 compact">
+              <select value={form.incomePeriod} onChange={(event) => setForm({ ...form, incomePeriod: event.target.value })}>
+                <option value="monthly">Monthly</option>
+                <option value="annual">Annual</option>
+              </select>
+              <input type="number" min="1" value={form.incomeAmount} onChange={(event) => setForm({ ...form, incomeAmount: event.target.value })} required />
             </div>
           </div>
           <div className="field">

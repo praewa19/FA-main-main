@@ -1,4 +1,5 @@
 import { getCurrentUser, requireVerified } from "@/lib/auth";
+import { createSupabaseServerClient } from "@/lib/supabase-server";
 import {
   budgetAlerts,
   enrichCategories,
@@ -7,20 +8,38 @@ import {
   metalInsights,
   recommendations,
 } from "@/lib/budget";
-import { readDb } from "@/lib/store";
+import { toBudgetPlan, toCategory, toHabit, toIncome, toProfile, toTransaction } from "@/lib/data";
 
 export async function GET() {
   const current = await getCurrentUser();
   const authError = requireVerified(current);
   if (authError) return authError;
 
-  const db = await readDb();
-  const profile = db.profiles.find((candidate) => candidate.userId === current.id);
-  const income = db.incomes.find((candidate) => candidate.userId === current.id);
-  const plan = db.budgetPlans.find((candidate) => candidate.userId === current.id);
-  const categories = db.categories.filter((category) => category.userId === current.id);
-  const transactions = db.transactions.filter((transaction) => transaction.userId === current.id);
-  const habits = db.habits.filter((habit) => habit.userId === current.id);
+  const supabase = await createSupabaseServerClient();
+  const [
+    { data: profileRow, error: profileError },
+    { data: incomeRow, error: incomeError },
+    { data: planRow, error: planError },
+    { data: categoryRows, error: categoriesError },
+    { data: transactionRows, error: transactionsError },
+    { data: habitRows, error: habitsError },
+  ] = await Promise.all([
+    supabase.from("profiles").select("*").eq("user_id", current.id).maybeSingle(),
+    supabase.from("incomes").select("*").eq("user_id", current.id).maybeSingle(),
+    supabase.from("budget_plans").select("*").eq("user_id", current.id).maybeSingle(),
+    supabase.from("categories").select("*").eq("user_id", current.id),
+    supabase.from("transactions").select("*").eq("user_id", current.id).order("date", { ascending: false }),
+    supabase.from("habits").select("*").eq("user_id", current.id).order("date", { ascending: false }),
+  ]);
+  const dbError = [profileError, incomeError, planError, categoriesError, transactionsError, habitsError].find(Boolean);
+  if (dbError) return Response.json({ error: dbError.message }, { status: 400 });
+
+  const profile = toProfile(profileRow);
+  const income = toIncome(incomeRow);
+  const plan = toBudgetPlan(planRow);
+  const categories = (categoryRows || []).map(toCategory);
+  const transactions = (transactionRows || []).map(toTransaction);
+  const habits = (habitRows || []).map(toHabit);
 
   if (!profile || !income || !plan) {
     return Response.json({ error: "Onboarding required." }, { status: 428 });

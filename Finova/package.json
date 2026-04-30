@@ -7,8 +7,7 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "check": "next build",
-    "reset:data": "node scripts/reset-data.mjs"
+    "check": "next build"
   },
   "engines": {
     "node": ">=20.9.0",

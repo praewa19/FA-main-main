@@ -1,6 +1,7 @@
 import { z } from "zod";
-import { getCurrentUser, requireVerified } from "@/lib/auth";
-import { id, nowIso, readDb, updateDb } from "@/lib/store";
+import { createSupabaseServerClient, getCurrentUser, requireVerified } from "@/lib/auth";
+import { fromHabit, toHabit } from "@/lib/data";
+import { id, nowIso } from "@/lib/store";
 
 const schema = z.object({
   budgetAdherence: z.boolean(),
@@ -12,8 +13,10 @@ export async function GET() {
   const current = await getCurrentUser();
   const authError = requireVerified(current);
   if (authError) return authError;
-  const db = await readDb();
-  return Response.json({ habits: db.habits.filter((habit) => habit.userId === current.id) });
+  const supabase = await createSupabaseServerClient();
+  const { data, error } = await supabase.from("habits").select("*").eq("user_id", current.id).order("date", { ascending: false });
+  if (error) return Response.json({ error: error.message }, { status: 400 });
+  return Response.json({ habits: (data || []).map(toHabit) });
 }
 
 export async function POST(request) {
@@ -24,18 +27,20 @@ export async function POST(request) {
   if (!parsed.success) return Response.json({ error: "Invalid habit log." }, { status: 400 });
 
   const today = nowIso().slice(0, 10);
-  const habit = await updateDb(async (db) => {
-    db.habits = db.habits.filter((candidate) => !(candidate.userId === current.id && candidate.date === today));
-    const created = {
-      id: id("habit"),
-      userId: current.id,
-      date: today,
-      ...parsed.data,
-      createdAt: nowIso(),
-    };
-    db.habits.push(created);
-    return created;
-  });
+  const supabase = await createSupabaseServerClient();
+  const created = {
+    id: id("habit"),
+    userId: current.id,
+    date: today,
+    ...parsed.data,
+    createdAt: nowIso(),
+  };
+  const { data, error } = await supabase
+    .from("habits")
+    .upsert(fromHabit(created), { onConflict: "user_id,date" })
+    .select("*")
+    .single();
+  if (error) return Response.json({ error: error.message }, { status: 400 });
 
-  return Response.json({ habit });
+  return Response.json({ habit: toHabit(data) });
 }

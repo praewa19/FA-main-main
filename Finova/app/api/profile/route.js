@@ -1,7 +1,8 @@
 import { z } from "zod";
 import { createSupabaseServerClient, getCurrentUser, requireVerified } from "@/lib/auth";
 import { buildBudgetPlan } from "@/lib/budget";
-import { id, nowIso, updateDb } from "@/lib/store";
+import { fromBudgetPlan, fromCategory, toProfile } from "@/lib/data";
+import { id, nowIso } from "@/lib/store";
 
 const passwordSchema = z
   .string()
@@ -39,51 +40,64 @@ export async function PATCH(request) {
     return Response.json({ error: "Enter both income period and amount." }, { status: 400 });
   }
 
+  const supabase = await createSupabaseServerClient();
+
   if (name || hasIncomeUpdate) {
-    await updateDb(async (db) => {
-      const profile = db.profiles.find((candidate) => candidate.userId === current.id);
-      if (profile && name) {
-        profile.name = name;
-        profile.updatedAt = nowIso();
-      }
+    if (name) {
+      const { error } = await supabase
+        .from("profiles")
+        .update({ name, updated_at: nowIso() })
+        .eq("user_id", current.id);
+      if (error) return Response.json({ error: error.message }, { status: 400 });
+    }
 
-      if (hasIncomeUpdate) {
-        if (!profile) return;
-        const monthlyIncome = Math.round(incomePeriod === "annual" ? incomeAmount / 12 : incomeAmount);
-        const income = db.incomes.find((candidate) => candidate.userId === current.id);
-        if (income) {
-          income.period = incomePeriod;
-          income.amount = incomeAmount;
-          income.monthlyIncome = monthlyIncome;
-          income.updatedAt = nowIso();
-        } else {
-          db.incomes.push({
-            id: id("income"),
-            userId: current.id,
-            period: incomePeriod,
-            amount: incomeAmount,
-            monthlyIncome,
-            updatedAt: nowIso(),
-          });
-        }
+    if (hasIncomeUpdate) {
+      const { data: profileRow, error: profileError } = await supabase
+        .from("profiles")
+        .select("*")
+        .eq("user_id", current.id)
+        .maybeSingle();
+      if (profileError) return Response.json({ error: profileError.message }, { status: 400 });
+      const profile = toProfile(profileRow);
+      if (!profile) return Response.json({ error: "Complete onboarding before editing income." }, { status: 428 });
 
-        const generated = buildBudgetPlan({
-          userId: current.id,
-          monthlyIncome,
-          hasDebt: profile.hasDebt,
-          priority: profile.priority,
-          mode: profile.mode,
-        });
-        db.budgetPlans = db.budgetPlans.filter((plan) => plan.userId !== current.id);
-        db.categories = db.categories.filter((category) => category.userId !== current.id);
-        db.budgetPlans.push(generated.plan);
-        db.categories.push(...generated.categories);
-      }
-    });
+      const monthlyIncome = Math.round(incomePeriod === "annual" ? incomeAmount / 12 : incomeAmount);
+      const { error: incomeError } = await supabase
+        .from("incomes")
+        .upsert({
+          id: id("income"),
+          user_id: current.id,
+          period: incomePeriod,
+          amount: incomeAmount,
+          monthly_income: monthlyIncome,
+          updated_at: nowIso(),
+        }, { onConflict: "user_id" });
+      if (incomeError) return Response.json({ error: incomeError.message }, { status: 400 });
+
+      const generated = buildBudgetPlan({
+        userId: current.id,
+        monthlyIncome,
+        hasDebt: profile.hasDebt,
+        priority: profile.priority,
+        mode: profile.mode,
+      });
+      const resetResults = await Promise.all([
+        supabase.from("categories").delete().eq("user_id", current.id),
+        supabase.from("budget_plans").delete().eq("user_id", current.id),
+      ]);
+      const resetError = resetResults.find((result) => result.error)?.error;
+      if (resetError) return Response.json({ error: resetError.message }, { status: 400 });
+
+      const insertResults = await Promise.all([
+        supabase.from("budget_plans").insert(fromBudgetPlan(generated.plan)),
+        supabase.from("categories").insert(generated.categories.map(fromCategory)),
+      ]);
+      const insertError = insertResults.find((result) => result.error)?.error;
+      if (insertError) return Response.json({ error: insertError.message }, { status: 400 });
+    }
   }
 
   if (email || password) {
-    const supabase = await createSupabaseServerClient();
     const updates = {};
     if (email) updates.email = email.toLowerCase();
     if (password) updates.password = password;

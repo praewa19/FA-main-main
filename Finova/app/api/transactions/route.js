@@ -1,6 +1,7 @@
 import { z } from "zod";
-import { getCurrentUser, requireVerified } from "@/lib/auth";
-import { id, nowIso, readDb, updateDb } from "@/lib/store";
+import { createSupabaseServerClient, getCurrentUser, requireVerified } from "@/lib/auth";
+import { fromTransaction, toTransaction } from "@/lib/data";
+import { id, nowIso } from "@/lib/store";
 
 const schema = z.object({
   categoryType: z.enum(["essentials", "debt", "savings", "lifestyle"]),
@@ -20,14 +21,14 @@ export async function GET(request) {
   const current = await getCurrentUser();
   const authError = requireVerified(current);
   if (authError) return authError;
-  const db = await readDb();
+  const supabase = await createSupabaseServerClient();
   const url = new URL(request.url);
   const date = url.searchParams.get("date");
-  const transactions = db.transactions.filter((transaction) => {
-    if (transaction.userId !== current.id) return false;
-    return date ? transaction.date === date : true;
-  });
-  return Response.json({ transactions });
+  let query = supabase.from("transactions").select("*").eq("user_id", current.id);
+  if (date) query = query.eq("date", date);
+  const { data, error } = await query.order("date", { ascending: false });
+  if (error) return Response.json({ error: error.message }, { status: 400 });
+  return Response.json({ transactions: (data || []).map(toTransaction) });
 }
 
 export async function POST(request) {
@@ -37,21 +38,20 @@ export async function POST(request) {
   const parsed = schema.safeParse(await request.json());
   if (!parsed.success) return Response.json({ error: "Choose a category and enter a positive amount." }, { status: 400 });
 
-  const transaction = await updateDb(async (db) => {
-    const created = {
-      id: id("txn"),
-      userId: current.id,
-      categoryType: parsed.data.categoryType,
-      amount: parsed.data.amount,
-      note: parsed.data.note || "",
-      date: parsed.data.date || nowIso().slice(0, 10),
-      createdAt: nowIso(),
-    };
-    db.transactions.push(created);
-    return created;
-  });
+  const supabase = await createSupabaseServerClient();
+  const created = {
+    id: id("txn"),
+    userId: current.id,
+    categoryType: parsed.data.categoryType,
+    amount: parsed.data.amount,
+    note: parsed.data.note || "",
+    date: parsed.data.date || nowIso().slice(0, 10),
+    createdAt: nowIso(),
+  };
+  const { data, error } = await supabase.from("transactions").insert(fromTransaction(created)).select("*").single();
+  if (error) return Response.json({ error: error.message }, { status: 400 });
 
-  return Response.json({ transaction });
+  return Response.json({ transaction: toTransaction(data) });
 }
 
 export async function PATCH(request) {
@@ -61,18 +61,24 @@ export async function PATCH(request) {
   const parsed = updateSchema.safeParse(await request.json());
   if (!parsed.success) return Response.json({ error: "Choose a saved activity and enter a positive amount." }, { status: 400 });
 
-  const transaction = await updateDb(async (db) => {
-    const found = db.transactions.find((candidate) => candidate.id === parsed.data.id && candidate.userId === current.id);
-    if (!found) return null;
-    if (parsed.data.categoryType) found.categoryType = parsed.data.categoryType;
-    found.amount = parsed.data.amount;
-    found.note = parsed.data.note || "";
-    found.updatedAt = nowIso();
-    return found;
-  });
+  const supabase = await createSupabaseServerClient();
+  const updates = {
+    amount: parsed.data.amount,
+    note: parsed.data.note || "",
+    updated_at: nowIso(),
+  };
+  if (parsed.data.categoryType) updates.category_type = parsed.data.categoryType;
+  const { data, error } = await supabase
+    .from("transactions")
+    .update(updates)
+    .eq("id", parsed.data.id)
+    .eq("user_id", current.id)
+    .select("*")
+    .maybeSingle();
 
-  if (!transaction) return Response.json({ error: "Activity not found." }, { status: 404 });
-  return Response.json({ transaction });
+  if (error) return Response.json({ error: error.message }, { status: 400 });
+  if (!data) return Response.json({ error: "Activity not found." }, { status: 404 });
+  return Response.json({ transaction: toTransaction(data) });
 }
 
 export async function DELETE(request) {
@@ -82,12 +88,15 @@ export async function DELETE(request) {
   const parsed = z.object({ id: z.string().min(1) }).safeParse(await request.json());
   if (!parsed.success) return Response.json({ error: "Choose an activity to delete." }, { status: 400 });
 
-  const deleted = await updateDb(async (db) => {
-    const before = db.transactions.length;
-    db.transactions = db.transactions.filter((candidate) => !(candidate.id === parsed.data.id && candidate.userId === current.id));
-    return db.transactions.length < before;
-  });
-
-  if (!deleted) return Response.json({ error: "Activity not found." }, { status: 404 });
+  const supabase = await createSupabaseServerClient();
+  const { data, error } = await supabase
+    .from("transactions")
+    .delete()
+    .eq("id", parsed.data.id)
+    .eq("user_id", current.id)
+    .select("id")
+    .maybeSingle();
+  if (error) return Response.json({ error: error.message }, { status: 400 });
+  if (!data) return Response.json({ error: "Activity not found." }, { status: 404 });
   return Response.json({ ok: true });
 }

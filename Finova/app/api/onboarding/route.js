@@ -1,7 +1,8 @@
 import { z } from "zod";
-import { getCurrentUser, requireVerified } from "@/lib/auth";
+import { createSupabaseServerClient, getCurrentUser, requireVerified } from "@/lib/auth";
 import { buildBudgetPlan } from "@/lib/budget";
-import { id, nowIso, publicUser, updateDb } from "@/lib/store";
+import { fromBudgetPlan, fromCategory, fromIncome, fromProfile } from "@/lib/data";
+import { id, nowIso, publicUser } from "@/lib/store";
 
 const schema = z.object({
   name: z.string().min(2),
@@ -30,13 +31,18 @@ export async function POST(request) {
     mode: parsed.data.mode,
   });
 
-  const user = await updateDb(async (db) => {
-    db.profiles = db.profiles.filter((profile) => profile.userId !== current.id);
-    db.incomes = db.incomes.filter((income) => income.userId !== current.id);
-    db.budgetPlans = db.budgetPlans.filter((plan) => plan.userId !== current.id);
-    db.categories = db.categories.filter((category) => category.userId !== current.id);
+  const supabase = await createSupabaseServerClient();
+  const deleteError = await Promise.all([
+    supabase.from("categories").delete().eq("user_id", current.id),
+    supabase.from("budget_plans").delete().eq("user_id", current.id),
+    supabase.from("incomes").delete().eq("user_id", current.id),
+    supabase.from("profiles").delete().eq("user_id", current.id),
+  ]).then((results) => results.find((result) => result.error)?.error);
 
-    db.profiles.push({
+  if (deleteError) return Response.json({ error: deleteError.message }, { status: 400 });
+
+  const inserts = await Promise.all([
+    supabase.from("profiles").insert(fromProfile({
       id: id("profile"),
       userId: current.id,
       name: parsed.data.name,
@@ -45,21 +51,21 @@ export async function POST(request) {
       mode: parsed.data.mode,
       hasDebt: parsed.data.hasDebt,
       updatedAt: nowIso(),
-    });
-    db.incomes.push({
+    })),
+    supabase.from("incomes").insert(fromIncome({
       id: id("income"),
       userId: current.id,
       period: parsed.data.incomePeriod,
       amount: parsed.data.incomeAmount,
       monthlyIncome,
       updatedAt: nowIso(),
-    });
-    db.budgetPlans.push(generated.plan);
-    db.categories.push(...generated.categories);
-    const found = db.users.find((candidate) => candidate.id === current.id);
-    found.onboardingComplete = true;
-    return found;
-  });
+    })),
+    supabase.from("budget_plans").insert(fromBudgetPlan(generated.plan)),
+    supabase.from("categories").insert(generated.categories.map(fromCategory)),
+  ]);
 
-  return Response.json({ user: publicUser(user) });
+  const insertError = inserts.find((result) => result.error)?.error;
+  if (insertError) return Response.json({ error: insertError.message }, { status: 400 });
+
+  return Response.json({ user: publicUser({ ...current, onboardingComplete: true }) });
 }

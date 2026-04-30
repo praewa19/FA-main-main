@@ -27,18 +27,18 @@ Send the project folder as a zip. The receiver should:
 2. Open a terminal inside the extracted folder.
 3. Run `npm install`.
 4. Copy `.env.example` to `.env.local` and set the Supabase project URL and anon key.
-5. Run `npm run dev`.
-6. Visit `http://localhost:3000`.
+5. Run the SQL in `supabase/schema.sql` in the Supabase SQL editor.
+6. Run `npm run dev`.
+7. Visit `http://localhost:3000`.
 
 For a smaller zip, you can exclude these generated folders before zipping:
 
 ```text
 node_modules
 .next
-data
 ```
 
-They are not required in the zip. `node_modules` is recreated by `npm install`, `.next` is recreated by `npm run dev` or `npm run build`, and `data/db.json` is recreated automatically when the app runs.
+They are not required in the zip. `node_modules` is recreated by `npm install`, and `.next` is recreated by `npm run dev` or `npm run build`.
 
 ## Available Commands
 
@@ -71,12 +71,6 @@ npm run check
 ```
 
 Alias for `npm run build`.
-
-```bash
-npm run reset:data
-```
-
-Deletes the local JSON database in `data/`. The app will recreate it on the next request.
 
 ## Environment Variables
 
@@ -201,27 +195,18 @@ The frontend calls these routes directly with `fetch`.
 
 ## Data Storage
 
-This version uses a local JSON file instead of a database service:
+Finova stores app data in Supabase Postgres. Run `supabase/schema.sql` in the Supabase SQL editor before using onboarding, transactions, habits, or dashboard summaries.
 
-```text
-data/db.json
-```
+Stored tables:
 
-The store is managed by `lib/store.js`. If `data/db.json` does not exist, it is created automatically.
-
-Stored collections:
-
-- `users`
 - `profiles`
 - `incomes`
-- `budgetPlans`
+- `budget_plans`
 - `categories`
 - `transactions`
 - `habits`
-- `recommendations`
-- `metalSnapshots`
 
-Supabase Auth is the source of truth for accounts and sessions. The local JSON store only keeps app-specific financial data keyed by the Supabase user id. For production, replace `lib/store.js` with a real database layer such as Supabase Postgres, Prisma + PostgreSQL, or another managed database.
+Supabase Auth is the source of truth for accounts and sessions. The database tables keep app-specific financial data keyed by the Supabase user id, with row-level security policies restricting each user to their own rows.
 
 ## Financial Logic
 
@@ -334,7 +319,9 @@ Email verification is handled by Supabase Auth. Configure the email templates an
 
 Before deploying:
 
-- Replace JSON storage with a real database.
+- Run `supabase/schema.sql` in the production Supabase project.
+- Set `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_ANON_KEY` in Vercel.
+- Add the Vercel callback URL, such as `https://your-app.vercel.app/auth/callback`, to Supabase Auth redirect URLs.
 - Add rate limiting to auth routes.
 - Add CSRF protection if expanding beyond same-site cookie usage.
 - Add input sanitization and audit logging for financial records.
@@ -363,11 +350,7 @@ Then open:
 http://localhost:3001
 ```
 
-If you want a clean app with no accounts or transactions:
-
-```bash
-npm run reset:data
-```
+If you want a clean app with no accounts or transactions, clear the relevant rows from Supabase.
 
 If production start fails, build first:
 

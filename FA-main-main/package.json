@@ -1,0 +1,32 @@
+{
+  "name": "finova",
+  "version": "1.0.0",
+  "description": "Intelligent budgeting and financial decision assistant for Finova",
+  "main": "next.config.mjs",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "check": "next build",
+    "reset:data": "node scripts/reset-data.mjs"
+  },
+  "engines": {
+    "node": ">=20.9.0",
+    "npm": ">=10.0.0"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "dependencies": {
+    "@supabase/ssr": "^0.10.2",
+    "@supabase/supabase-js": "^2.105.1",
+    "date-fns": "^4.1.0",
+    "lucide-react": "^1.12.0",
+    "next": "^16.2.4",
+    "react": "^19.2.5",
+    "react-dom": "^19.2.5",
+    "recharts": "^3.8.1",
+    "zod": "^4.3.6"
+  }
+}

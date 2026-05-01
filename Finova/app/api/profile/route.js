@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { createSupabaseServerClient, getCurrentUser, requireVerified } from "@/lib/auth";
+import { createSupabaseAdminClient, createSupabaseServerClient, getCurrentUser, requireVerified } from "@/lib/auth";
 import { buildBudgetPlan } from "@/lib/budget";
 import { fromBudgetPlan, fromCategory, toProfile } from "@/lib/data";
 import { id, nowIso } from "@/lib/store";
@@ -110,4 +110,30 @@ export async function PATCH(request) {
       ? "Profile updated. Confirm the email change from your inbox if Supabase requires it."
       : "Profile updated.",
   });
+}
+
+export async function DELETE() {
+  const current = await getCurrentUser();
+  const authError = requireVerified(current);
+  if (authError) return authError;
+
+  let admin;
+  try {
+    admin = createSupabaseAdminClient();
+  } catch (error) {
+    return Response.json({ error: error.message }, { status: 500 });
+  }
+
+  const tables = ["habits", "transactions", "debt_obligations", "categories", "budget_plans", "incomes", "profiles"];
+  for (const table of tables) {
+    const { error } = await admin.from(table).delete().eq("user_id", current.id);
+    if (error) return Response.json({ error: error.message }, { status: 400 });
+  }
+
+  const { error } = await admin.auth.admin.deleteUser(current.id);
+  if (error) return Response.json({ error: error.message }, { status: 400 });
+
+  const supabase = await createSupabaseServerClient();
+  await supabase.auth.signOut();
+  return Response.json({ ok: true, message: "Account deleted." });
 }

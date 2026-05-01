@@ -1352,6 +1352,16 @@ select:focus {
   grid-template-columns: minmax(0, 1fr);
 }
 
+.settings-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.danger-zone {
+  border-color: rgba(155, 63, 47, 0.18);
+}
+
 @media (max-width: 700px) {
   .transaction-edit-row:not(:has(.grid-2)) {
     grid-template-columns: 1fr;

@@ -91,9 +91,12 @@ Set:
 ```text
 NEXT_PUBLIC_SUPABASE_URL=https://your-project-ref.supabase.co
 NEXT_PUBLIC_SUPABASE_ANON_KEY=your-supabase-anon-key
+SUPABASE_SERVICE_ROLE_KEY=your-server-only-service-role-key
 ```
 
-These values are available in Supabase under Project Settings > API. Enable email/password signups in Supabase Authentication before testing signup and login. Add your local callback URL, such as `http://localhost:3000/auth/callback`, to the allowed redirect URLs so email verification and password reset links can create a secure session.
+These values are available in Supabase under Project Settings > API. The service role key must only be set on the server or in Vercel environment variables; never expose it with a `NEXT_PUBLIC_` prefix. It is used to permanently delete a user's Supabase Auth account from the settings page.
+
+Enable email/password signups in Supabase Authentication before testing signup and login. Add your local callback URL, such as `http://localhost:3000/auth/callback`, to the allowed redirect URLs so email verification and password reset links can create a secure session.
 
 ## App Flow
 
@@ -380,6 +383,7 @@ Before deploying:
 
 - Run `supabase/schema.sql` in the production Supabase project.
 - Set `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_ANON_KEY` in Vercel.
+- Set `SUPABASE_SERVICE_ROLE_KEY` in Vercel so account deletion can remove Supabase Auth users.
 - Add the Vercel callback URL, such as `https://your-app.vercel.app/auth/callback`, to Supabase Auth redirect URLs.
 - Add rate limiting to auth routes.
 - Add CSRF protection if expanding beyond same-site cookie usage.

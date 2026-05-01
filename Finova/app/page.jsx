@@ -1197,6 +1197,8 @@ const SettingsPage = memo(function SettingsPage({ user, profile, income, onDone 
   const [error, setError] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [setupResetting, setSetupResetting] = useState(false);
+  const [deletingAccount, setDeletingAccount] = useState(false);
 
   useEffect(() => {
     setForm({
@@ -1229,6 +1231,37 @@ const SettingsPage = memo(function SettingsPage({ user, profile, income, onDone 
       setError(err.message);
     } finally {
       setSubmitting(false);
+    }
+  }
+
+  async function resetSetup() {
+    if (!window.confirm("Run setup again? Your current profile, income, budget plan, and debt setup will be cleared.")) return;
+    setError("");
+    setMessage("");
+    setSetupResetting(true);
+    try {
+      const result = await api("/api/profile/reset-setup", { method: "POST" });
+      setMessage(result.message);
+      await onDone();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setSetupResetting(false);
+    }
+  }
+
+  async function deleteAccount() {
+    if (!window.confirm("Permanently delete your Finova account and all saved financial data? This cannot be undone.")) return;
+    setError("");
+    setMessage("");
+    setDeletingAccount(true);
+    try {
+      await api("/api/profile", { method: "DELETE" });
+      await onDone();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setDeletingAccount(false);
     }
   }
 
@@ -1279,6 +1312,25 @@ const SettingsPage = memo(function SettingsPage({ user, profile, income, onDone 
             {submitting ? "Saving..." : "Save settings"}
           </button>
         </form>
+      </section>
+      <section className="panel section settings-panel danger-zone">
+        <div className="section-heading">
+          <div>
+            <h2>Account Actions</h2>
+            <p className="hint">Restart setup or permanently remove this account.</p>
+          </div>
+          <AlertTriangle size={20} />
+        </div>
+        <div className="settings-actions">
+          <button className="btn secondary" type="button" onClick={resetSetup} disabled={setupResetting || deletingAccount}>
+            <RefreshCcw size={17} />
+            {setupResetting ? "Resetting..." : "Run setup again"}
+          </button>
+          <button className="btn secondary danger" type="button" onClick={deleteAccount} disabled={setupResetting || deletingAccount}>
+            <Trash2 size={17} />
+            {deletingAccount ? "Deleting..." : "Delete account"}
+          </button>
+        </div>
       </section>
     </div>
   );

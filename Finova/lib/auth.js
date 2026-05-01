@@ -1,5 +1,5 @@
 import { getSessionData } from "@/lib/data";
-import { createSupabaseServerClient, supabaseConfigError } from "@/lib/supabase-server";
+import { createSupabaseAdminClient, createSupabaseServerClient, supabaseConfigError } from "@/lib/supabase-server";
 import { nowIso, publicUser } from "@/lib/store";
 
 export function normalizeSupabaseUser(user, localUser = null) {
@@ -40,4 +40,4 @@ export function requireVerified(user) {
   return null;
 }
 
-export { createSupabaseServerClient, supabaseConfigError };
+export { createSupabaseAdminClient, createSupabaseServerClient, supabaseConfigError };

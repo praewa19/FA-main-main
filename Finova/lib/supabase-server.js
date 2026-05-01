@@ -1,4 +1,5 @@
 import { createServerClient } from "@supabase/ssr";
+import { createClient } from "@supabase/supabase-js";
 import { cookies } from "next/headers";
 
 function supabaseConfig() {
@@ -10,6 +11,17 @@ function supabaseConfig() {
   }
 
   return { url, anonKey };
+}
+
+function supabaseAdminConfig() {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+  if (!url || !serviceRoleKey) {
+    throw new Error("Supabase admin is not configured. Set SUPABASE_SERVICE_ROLE_KEY on the server.");
+  }
+
+  return { url, serviceRoleKey };
 }
 
 export function supabaseConfigError() {
@@ -35,6 +47,16 @@ export async function createSupabaseServerClient() {
           cookieStore.set(name, value, options);
         });
       },
+    },
+  });
+}
+
+export function createSupabaseAdminClient() {
+  const { url, serviceRoleKey } = supabaseAdminConfig();
+  return createClient(url, serviceRoleKey, {
+    auth: {
+      autoRefreshToken: false,
+      persistSession: false,
     },
   });
 }

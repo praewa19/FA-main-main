@@ -5,6 +5,7 @@ import {
   debtAlerts,
   debtAnalytics,
   debtEmiReminders,
+  applyDebtRepaymentTarget,
   enrichCategories,
   financialHealthScore,
   habitStreak,
@@ -52,7 +53,8 @@ export async function GET() {
     return Response.json({ error: "Onboarding required." }, { status: 428 });
   }
 
-  const enriched = enrichCategories(categories, transactions);
+  const adjustedCategories = applyDebtRepaymentTarget(categories, debtObligations);
+  const enriched = enrichCategories(adjustedCategories, transactions);
   const ranking = [...enriched].sort((a, b) => b.riskScore - a.riskScore);
   const alerts = [...budgetAlerts(enriched, income.monthlyIncome), ...debtAlerts(debtObligations)];
   const recs = recommendations({ categories: enriched, monthlyIncome: income.monthlyIncome, mode: profile.mode });

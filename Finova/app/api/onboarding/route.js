@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { createSupabaseServerClient, getCurrentUser, requireVerified } from "@/lib/auth";
-import { buildBudgetPlan } from "@/lib/budget";
+import { applyDebtRepaymentTarget, buildBudgetPlan, debtAnalytics } from "@/lib/budget";
 import { fromBudgetPlan, fromCategory, fromDebtObligation, fromIncome, fromProfile } from "@/lib/data";
 import { id, nowIso, publicUser } from "@/lib/store";
 
@@ -47,6 +47,20 @@ export async function POST(request) {
     priority: parsed.data.priority,
     mode: parsed.data.mode,
   });
+  const debtInput = parsed.data.hasDebt && parsed.data.debt ? [{
+    id: id("debt"),
+    userId: current.id,
+    name: parsed.data.debt.name,
+    originalAmount: parsed.data.debt.originalAmount,
+    annualInterestRate: parsed.data.debt.annualInterestRate,
+    remainingMonths: parsed.data.debt.remainingMonths,
+    amountRepaid: parsed.data.debt.amountRepaid,
+    emiDay: parsed.data.debt.emiDay,
+    goal: parsed.data.debt.goal,
+    createdAt: nowIso(),
+  }] : [];
+  const debtTargets = debtAnalytics(debtInput, monthlyIncome);
+  const categories = applyDebtRepaymentTarget(generated.categories, debtTargets);
 
   const supabase = await createSupabaseServerClient();
   const cleanupTables = ["debt_obligations", "categories", "budget_plans", "incomes", "profiles"];
@@ -82,22 +96,11 @@ export async function POST(request) {
   const upsertError = upserts.find((result) => result.error)?.error;
   if (upsertError) return Response.json({ error: upsertError.message }, { status: 400 });
 
-  const { error: categoryError } = await supabase.from("categories").insert(generated.categories.map(fromCategory));
+  const { error: categoryError } = await supabase.from("categories").insert(categories.map(fromCategory));
   if (categoryError) return Response.json({ error: categoryError.message }, { status: 400 });
 
   if (parsed.data.hasDebt && parsed.data.debt) {
-    const { error: debtError } = await supabase.from("debt_obligations").insert(fromDebtObligation({
-      id: id("debt"),
-      userId: current.id,
-      name: parsed.data.debt.name,
-      originalAmount: parsed.data.debt.originalAmount,
-      annualInterestRate: parsed.data.debt.annualInterestRate,
-      remainingMonths: parsed.data.debt.remainingMonths,
-      amountRepaid: parsed.data.debt.amountRepaid,
-      emiDay: parsed.data.debt.emiDay,
-      goal: parsed.data.debt.goal,
-      createdAt: nowIso(),
-    }));
+    const { error: debtError } = await supabase.from("debt_obligations").insert(fromDebtObligation(debtInput[0]));
     if (debtError) return Response.json({ error: debtError.message }, { status: 400 });
   }
 

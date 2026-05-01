@@ -129,6 +129,16 @@ export function buildBudgetPlan({ userId, monthlyIncome, hasDebt, priority, mode
   };
 }
 
+export function applyDebtRepaymentTarget(categories, debts = []) {
+  const totalEmi = debts.reduce((sum, debt) => sum + Number(debt.estimatedEmi || 0), 0);
+  if (totalEmi <= 0) return categories;
+  return categories.map((category) => (
+    category.type === "debt"
+      ? { ...category, monthlyLimit: Math.round(totalEmi) }
+      : category
+  ));
+}
+
 export function monthProgress(date = new Date()) {
   const start = startOfMonth(date);
   const end = endOfMonth(date);
@@ -140,22 +150,28 @@ export function monthProgress(date = new Date()) {
 export function enrichCategories(categories, transactions, date = new Date()) {
   const { day, total } = monthProgress(date);
   return categories.map((category) => {
-    const spent = transactions
+    const actual = transactions
       .filter((transaction) => transaction.categoryType === category.type)
       .reduce((sum, transaction) => sum + Number(transaction.amount), 0);
     const expected = Math.round((day / total) * category.monthlyLimit);
-    const remaining = category.monthlyLimit - spent;
-    const status = spent > category.monthlyLimit ? "red" : spent > expected ? "orange" : "green";
-    const riskScore = expected > 0 ? Number(((spent / expected) * category.weight).toFixed(2)) : 0;
+    const isDebt = category.type === "debt";
+    const remaining = isDebt ? Math.max(0, category.monthlyLimit - actual) : category.monthlyLimit - actual;
+    const status = isDebt
+      ? actual >= expected ? "green" : actual > 0 ? "orange" : "red"
+      : actual > category.monthlyLimit ? "red" : actual > expected ? "orange" : "green";
+    const riskScore = expected > 0
+      ? Number(((isDebt ? Math.max(0, expected - actual) / expected : actual / expected) * category.weight).toFixed(2))
+      : 0;
 
     return {
       ...category,
-      spent,
+      spent: actual,
+      repaid: isDebt ? actual : undefined,
       expected,
       remaining,
       status,
       riskScore,
-      progress: category.monthlyLimit > 0 ? Math.min(100, Math.round((spent / category.monthlyLimit) * 100)) : 0,
+      progress: category.monthlyLimit > 0 ? Math.min(100, Math.round((actual / category.monthlyLimit) * 100)) : 0,
     };
   });
 }
@@ -180,8 +196,18 @@ export function recommendations({ categories, monthlyIncome, mode }) {
   categories
     .filter((category) => category.status !== "green")
     .forEach((category) => {
-      const excess = Math.max(0, category.spent - category.expected);
       const remainingDays = Math.max(1, monthProgress().total - monthProgress().day);
+      if (category.type === "debt") {
+        const shortfall = Math.max(0, category.expected - category.spent);
+        recs.push({
+          id: id("rec"),
+          severity: category.status === "red" ? "high" : "medium",
+          title: `${category.label} repayment is behind pace`,
+          body: `You are ${money(shortfall)} behind the expected repayment pace. Pay about ${money(shortfall / Math.ceil(remainingDays / 7))} extra per week to catch up this month.`,
+        });
+        return;
+      }
+      const excess = Math.max(0, category.spent - category.expected);
       recs.push({
         id: id("rec"),
         severity: category.status === "red" ? "high" : "medium",

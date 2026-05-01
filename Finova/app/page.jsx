@@ -1067,6 +1067,7 @@ const Metric = memo(function Metric({ icon, label, value }) {
 });
 
 const CategoryRow = memo(function CategoryRow({ category }) {
+  const isDebt = category.type === "debt";
   return (
     <div className="category-row">
       <div>
@@ -1079,10 +1080,10 @@ const CategoryRow = memo(function CategoryRow({ category }) {
           <span style={{ width: `${category.progress}%`, background: categoryColors[category.type] }} />
         </div>
         <div className="money-row">
-          <span>Limit {formatMoney(category.monthlyLimit)}</span>
-          <span>Spent {formatMoney(category.spent)}</span>
+          <span>{isDebt ? "Target" : "Limit"} {formatMoney(category.monthlyLimit)}</span>
+          <span>{isDebt ? "Repaid" : "Spent"} {formatMoney(category.spent)}</span>
           <span>Expected {formatMoney(category.expected)}</span>
-          <span>Remaining {formatMoney(category.remaining)}</span>
+          <span>{isDebt ? "Due left" : "Remaining"} {formatMoney(category.remaining)}</span>
         </div>
       </div>
       <CircleDollarSign color={categoryColors[category.type]} />

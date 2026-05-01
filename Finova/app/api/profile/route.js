@@ -81,19 +81,18 @@ export async function PATCH(request) {
         priority: profile.priority,
         mode: profile.mode,
       });
-      const resetResults = await Promise.all([
-        supabase.from("categories").delete().eq("user_id", current.id),
-        supabase.from("budget_plans").delete().eq("user_id", current.id),
-      ]);
-      const resetError = resetResults.find((result) => result.error)?.error;
-      if (resetError) return Response.json({ error: resetError.message }, { status: 400 });
+      for (const table of ["categories", "budget_plans"]) {
+        const { error } = await supabase.from(table).delete().eq("user_id", current.id);
+        if (error) return Response.json({ error: error.message }, { status: 400 });
+      }
 
-      const insertResults = await Promise.all([
-        supabase.from("budget_plans").insert(fromBudgetPlan(generated.plan)),
-        supabase.from("categories").insert(generated.categories.map(fromCategory)),
-      ]);
-      const insertError = insertResults.find((result) => result.error)?.error;
-      if (insertError) return Response.json({ error: insertError.message }, { status: 400 });
+      const { error: planError } = await supabase
+        .from("budget_plans")
+        .upsert(fromBudgetPlan(generated.plan), { onConflict: "user_id" });
+      if (planError) return Response.json({ error: planError.message }, { status: 400 });
+
+      const { error: categoryError } = await supabase.from("categories").insert(generated.categories.map(fromCategory));
+      if (categoryError) return Response.json({ error: categoryError.message }, { status: 400 });
     }
   }
 

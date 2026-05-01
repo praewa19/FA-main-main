@@ -49,18 +49,13 @@ export async function POST(request) {
   });
 
   const supabase = await createSupabaseServerClient();
-  const deleteError = await Promise.all([
-    supabase.from("debt_obligations").delete().eq("user_id", current.id),
-    supabase.from("categories").delete().eq("user_id", current.id),
-    supabase.from("budget_plans").delete().eq("user_id", current.id),
-    supabase.from("incomes").delete().eq("user_id", current.id),
-    supabase.from("profiles").delete().eq("user_id", current.id),
-  ]).then((results) => results.find((result) => result.error)?.error);
+  const cleanupTables = ["debt_obligations", "categories", "budget_plans", "incomes", "profiles"];
+  for (const table of cleanupTables) {
+    const { error } = await supabase.from(table).delete().eq("user_id", current.id);
+    if (error) return Response.json({ error: error.message }, { status: 400 });
+  }
 
-  if (deleteError) return Response.json({ error: deleteError.message }, { status: 400 });
-
-  const insertOps = [
-    supabase.from("profiles").insert(fromProfile({
+  const profile = fromProfile({
       id: id("profile"),
       userId: current.id,
       name: parsed.data.name,
@@ -69,20 +64,29 @@ export async function POST(request) {
       mode: parsed.data.mode,
       hasDebt: parsed.data.hasDebt,
       updatedAt: nowIso(),
-    })),
-    supabase.from("incomes").insert(fromIncome({
+  });
+  const income = fromIncome({
       id: id("income"),
       userId: current.id,
       period: parsed.data.incomePeriod,
       amount: parsed.data.incomeAmount,
       monthlyIncome,
       updatedAt: nowIso(),
-    })),
-    supabase.from("budget_plans").insert(fromBudgetPlan(generated.plan)),
-    supabase.from("categories").insert(generated.categories.map(fromCategory)),
-  ];
+  });
+  const plan = fromBudgetPlan(generated.plan);
+  const upserts = await Promise.all([
+    supabase.from("profiles").upsert(profile, { onConflict: "user_id" }),
+    supabase.from("incomes").upsert(income, { onConflict: "user_id" }),
+    supabase.from("budget_plans").upsert(plan, { onConflict: "user_id" }),
+  ]);
+  const upsertError = upserts.find((result) => result.error)?.error;
+  if (upsertError) return Response.json({ error: upsertError.message }, { status: 400 });
+
+  const { error: categoryError } = await supabase.from("categories").insert(generated.categories.map(fromCategory));
+  if (categoryError) return Response.json({ error: categoryError.message }, { status: 400 });
+
   if (parsed.data.hasDebt && parsed.data.debt) {
-    insertOps.push(supabase.from("debt_obligations").insert(fromDebtObligation({
+    const { error: debtError } = await supabase.from("debt_obligations").insert(fromDebtObligation({
       id: id("debt"),
       userId: current.id,
       name: parsed.data.debt.name,
@@ -93,12 +97,9 @@ export async function POST(request) {
       emiDay: parsed.data.debt.emiDay,
       goal: parsed.data.debt.goal,
       createdAt: nowIso(),
-    })));
+    }));
+    if (debtError) return Response.json({ error: debtError.message }, { status: 400 });
   }
-
-  const inserts = await Promise.all(insertOps);
-  const insertError = inserts.find((result) => result.error)?.error;
-  if (insertError) return Response.json({ error: insertError.message }, { status: 400 });
 
   return Response.json({ user: publicUser({ ...current, onboardingComplete: true }) });
 }

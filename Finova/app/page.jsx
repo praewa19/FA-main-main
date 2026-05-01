@@ -372,6 +372,15 @@ function Onboarding({ onDone }) {
     priority: "saving",
     mode: "professional",
     hasDebt: false,
+    debt: {
+      name: "",
+      originalAmount: "",
+      annualInterestRate: "",
+      remainingMonths: "",
+      amountRepaid: "",
+      emiDay: "1",
+      goal: "stay_consistent",
+    },
   });
   const [error, setError] = useState("");
 
@@ -381,7 +390,18 @@ function Onboarding({ onDone }) {
     try {
       await api("/api/onboarding", {
         method: "POST",
-        body: JSON.stringify({ ...form, incomeAmount: Number(form.incomeAmount) }),
+        body: JSON.stringify({
+          ...form,
+          incomeAmount: Number(form.incomeAmount),
+          debt: form.hasDebt ? {
+            ...form.debt,
+            originalAmount: Number(form.debt.originalAmount),
+            annualInterestRate: Number(form.debt.annualInterestRate || 0),
+            remainingMonths: Number(form.debt.remainingMonths),
+            amountRepaid: Number(form.debt.amountRepaid || 0),
+            emiDay: Number(form.debt.emiDay),
+          } : undefined,
+        }),
       });
       onDone();
     } catch (err) {
@@ -448,6 +468,61 @@ function Onboarding({ onDone }) {
           <input style={{ width: 18, minHeight: 18 }} type="checkbox" checked={form.hasDebt} onChange={(event) => setForm({ ...form, hasDebt: event.target.checked })} />
           I have debt or fixed obligations to prioritize.
         </label>
+        {form.hasDebt && (
+          <div className="debt-setup">
+            <div className="section-heading compact-heading">
+              <div>
+                <h2>Debt Obligation</h2>
+                <p className="hint">Used for EMI reminders, payoff estimates, and debt risk alerts.</p>
+              </div>
+              <Coins size={20} />
+            </div>
+            <div className="grid-2">
+              <div className="field">
+                <label>Debt Name</label>
+                <input value={form.debt.name} onChange={(event) => setForm({ ...form, debt: { ...form.debt, name: event.target.value } })} placeholder="Car loan, education loan..." required={form.hasDebt} />
+              </div>
+              <div className="field">
+                <label>Debt Amount</label>
+                <input type="number" min="1" value={form.debt.originalAmount} onChange={(event) => setForm({ ...form, debt: { ...form.debt, originalAmount: event.target.value } })} required={form.hasDebt} />
+              </div>
+            </div>
+            <div className="grid-2">
+              <div className="field">
+                <label>Annual Interest Rate</label>
+                <input type="number" min="0" step="0.01" value={form.debt.annualInterestRate} onChange={(event) => setForm({ ...form, debt: { ...form.debt, annualInterestRate: event.target.value } })} placeholder="0" required={form.hasDebt} />
+              </div>
+              <div className="field">
+                <label>Remaining Period</label>
+                <input type="number" min="1" value={form.debt.remainingMonths} onChange={(event) => setForm({ ...form, debt: { ...form.debt, remainingMonths: event.target.value } })} placeholder="Months" required={form.hasDebt} />
+              </div>
+            </div>
+            <div className="grid-2">
+              <div className="field">
+                <label>Amount Repaid</label>
+                <input type="number" min="0" value={form.debt.amountRepaid} onChange={(event) => setForm({ ...form, debt: { ...form.debt, amountRepaid: event.target.value } })} placeholder="0" required={form.hasDebt} />
+              </div>
+              <div className="field">
+                <label>Monthly EMI Date</label>
+                <input type="number" min="1" max="31" value={form.debt.emiDay} onChange={(event) => setForm({ ...form, debt: { ...form.debt, emiDay: event.target.value } })} required={form.hasDebt} />
+              </div>
+            </div>
+            <div className="field">
+              <label>Debt Goal</label>
+              <div className="segmented three">
+                {[
+                  ["catch_up", "Catch up"],
+                  ["stay_consistent", "Stay consistent"],
+                  ["pay_ahead", "Pay ahead"],
+                ].map(([value, label]) => (
+                  <button type="button" key={value} className={`segment ${form.debt.goal === value ? "active" : ""}`} onClick={() => setForm({ ...form, debt: { ...form.debt, goal: value } })}>
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
         {error && <div className="alert risk">{error}</div>}
         <button className="btn" type="submit">
           <PiggyBank size={17} />
@@ -460,7 +535,7 @@ function Onboarding({ onDone }) {
 
 const Dashboard = memo(function Dashboard({ user, summary, activeTab, isTabPending, onDone }) {
   if (!summary) return null;
-  const { profile, income, categories, ranking, recommendations, health, alerts, metals, streak, habits, transactions } = summary;
+  const { profile, income, categories, ranking, recommendations, health, alerts, metals, streak, habits, transactions, debtObligations, emiReminders } = summary;
   const chartData = useMemo(() => categories.map((category) => ({
     name: category.label.replace(" / ", " "),
     Actual: category.spent,
@@ -512,7 +587,7 @@ const Dashboard = memo(function Dashboard({ user, summary, activeTab, isTabPendi
         ) : activeTab === "budget" ? (
           <BudgetManagementPage categories={categories} chartData={chartData} pieData={pieData} ranking={ranking} onDone={onDone} />
         ) : (
-          <InsightsHabitsPage recommendations={recommendations} habits={habits} metals={metals} transactions={transactions || []} categories={categories} onDone={onDone} />
+          <InsightsHabitsPage recommendations={recommendations} habits={habits} metals={metals} transactions={transactions || []} categories={categories} debtObligations={debtObligations || []} emiReminders={emiReminders || []} onDone={onDone} />
         )}
       </div>
     </div>
@@ -546,20 +621,49 @@ const BudgetManagementPage = memo(function BudgetManagementPage({ categories, ch
   );
 });
 
-const InsightsHabitsPage = memo(function InsightsHabitsPage({ recommendations, habits, metals, transactions, categories, onDone }) {
+const InsightsHabitsPage = memo(function InsightsHabitsPage({ recommendations, habits, metals, transactions, categories, debtObligations, emiReminders, onDone }) {
   const [selectedDate, setSelectedDate] = useState(() => new Date().toISOString().slice(0, 10));
   const transactionsForDate = useMemo(
     () => transactions.filter((transaction) => transaction.date === selectedDate),
     [transactions, selectedDate],
   );
+  const remindersForDate = useMemo(
+    () => emiReminders.filter((reminder) => reminder.date === selectedDate),
+    [emiReminders, selectedDate],
+  );
 
   return (
     <div className="dashboard-page insights-grid">
-      <HabitCalendar habits={habits} transactions={transactions} selectedDate={selectedDate} onSelectDate={setSelectedDate} />
-      <DailyTransactions selectedDate={selectedDate} transactions={transactionsForDate} onDone={onDone} />
+      <HabitCalendar habits={habits} transactions={transactions} emiReminders={emiReminders} selectedDate={selectedDate} onSelectDate={setSelectedDate} />
+      <DailyTransactions selectedDate={selectedDate} transactions={transactionsForDate} reminders={remindersForDate} onDone={onDone} />
+      {debtObligations.length > 0 && <DebtPlanPanel debts={debtObligations} />}
       <RecommendationsPanel recommendations={recommendations} />
       <HabitPanel categories={categories} onDone={onDone} />
       <MetalInsights metals={metals} />
+    </div>
+  );
+});
+
+const DebtPlanPanel = memo(function DebtPlanPanel({ debts }) {
+  return (
+    <div className="panel section debt-plan-panel">
+      <h2>Debt Plan</h2>
+      <div className="debt-plan-list">
+        {debts.map((debt) => (
+          <div className="debt-plan-row" key={debt.id}>
+            <div>
+              <strong>{debt.name}</strong>
+              <div className="hint">{debt.goalLabel} | Payoff target {new Date(`${debt.payoffDate}T12:00:00`).toLocaleDateString("en-IN", { month: "short", year: "numeric" })}</div>
+            </div>
+            <div className="debt-plan-metrics">
+              <span>EMI {formatMoney(debt.estimatedEmi)}</span>
+              <span>Remaining {formatMoney(debt.remainingBalance)}</span>
+              <span>{debt.repaymentProgress}% repaid</span>
+            </div>
+            <p className="hint">{debt.goalAction}</p>
+          </div>
+        ))}
+      </div>
     </div>
   );
 });
@@ -620,7 +724,7 @@ const MetalInsights = memo(function MetalInsights({ metals }) {
   );
 });
 
-const HabitCalendar = memo(function HabitCalendar({ habits, transactions, selectedDate, onSelectDate }) {
+const HabitCalendar = memo(function HabitCalendar({ habits, transactions, emiReminders, selectedDate, onSelectDate }) {
   const { cells, monthLabel } = useMemo(() => {
     const current = new Date(`${selectedDate}T12:00:00`);
     const year = current.getFullYear();
@@ -634,6 +738,10 @@ const HabitCalendar = memo(function HabitCalendar({ habits, transactions, select
       map[transaction.date] = (map[transaction.date] || 0) + Number(transaction.amount || 0);
       return map;
     }, {});
+    const emiByDate = emiReminders.reduce((map, reminder) => {
+      map[reminder.date] = (map[reminder.date] || 0) + Number(reminder.amountDue || 0);
+      return map;
+    }, {});
     const cells = [
     ...Array.from({ length: leadingBlanks }, (_, index) => ({ key: `blank-${index}` })),
     ...Array.from({ length: daysInMonth }, (_, index) => {
@@ -641,7 +749,7 @@ const HabitCalendar = memo(function HabitCalendar({ habits, transactions, select
       const date = `${year}-${String(month + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
       const habit = habitByDate[date];
       const completed = habit ? [habit.budgetAdherence, habit.spendingControl, habit.savingsAction].filter(Boolean).length : 0;
-      return { key: date, date, day, completed, spent: spendByDate[date] || 0, isToday: date === todayKey, selected: date === selectedDate };
+      return { key: date, date, day, completed, spent: spendByDate[date] || 0, emiDue: emiByDate[date] || 0, isToday: date === todayKey, selected: date === selectedDate };
     }),
     ];
 
@@ -650,7 +758,7 @@ const HabitCalendar = memo(function HabitCalendar({ habits, transactions, select
       cells,
       monthLabel: current.toLocaleString("en", { month: "long", year: "numeric" }),
     };
-  }, [habits, selectedDate, transactions]);
+  }, [emiReminders, habits, selectedDate, transactions]);
 
   return (
     <div className="panel section calendar-panel">
@@ -672,14 +780,14 @@ const HabitCalendar = memo(function HabitCalendar({ habits, transactions, select
           <button
             key={cell.key}
             type="button"
-            className={`calendar-cell ${cell.day ? "" : "empty"} ${cell.isToday ? "today" : ""} ${cell.selected ? "selected" : ""} ${cell.completed === 3 ? "complete" : cell.completed > 0 ? "partial" : ""}`}
+            className={`calendar-cell ${cell.day ? "" : "empty"} ${cell.isToday ? "today" : ""} ${cell.selected ? "selected" : ""} ${cell.emiDue ? "emi-due" : ""} ${cell.completed === 3 ? "complete" : cell.completed > 0 ? "partial" : ""}`}
             disabled={!cell.day}
             onClick={() => cell.date && onSelectDate(cell.date)}
           >
             {cell.day && (
               <>
                 <span>{cell.day}</span>
-                <small>{cell.spent ? formatMoney(cell.spent) : cell.completed ? `${cell.completed}/3` : ""}</small>
+                <small>{cell.emiDue ? `EMI ${formatMoney(cell.emiDue)}` : cell.spent ? formatMoney(cell.spent) : cell.completed ? `${cell.completed}/3` : ""}</small>
               </>
             )}
           </button>
@@ -689,7 +797,7 @@ const HabitCalendar = memo(function HabitCalendar({ habits, transactions, select
   );
 });
 
-const DailyTransactions = memo(function DailyTransactions({ selectedDate, transactions, onDone }) {
+const DailyTransactions = memo(function DailyTransactions({ selectedDate, transactions, reminders, onDone }) {
   return (
     <div className="panel section transaction-review-panel">
       <div className="section-heading">
@@ -698,6 +806,19 @@ const DailyTransactions = memo(function DailyTransactions({ selectedDate, transa
           <p className="hint">{new Date(`${selectedDate}T12:00:00`).toLocaleDateString("en-IN", { day: "numeric", month: "long", year: "numeric" })}</p>
         </div>
       </div>
+      {reminders.length > 0 && (
+        <div className="emi-reminder-list">
+          {reminders.map((reminder) => (
+            <div className="emi-reminder" key={reminder.id}>
+              <CalendarDays size={17} />
+              <div>
+                <strong>{reminder.name} EMI due: {formatMoney(reminder.amountDue)}</strong>
+                <div className="hint">{reminder.goalLabel}</div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
       {transactions.length ? (
         <div className="transaction-edit-list">
           {transactions.map((transaction) => <EditableTransaction key={transaction.id} transaction={transaction} onDone={onDone} />)}

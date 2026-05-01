@@ -205,6 +205,7 @@ Stored tables:
 - `categories`
 - `transactions`
 - `habits`
+- `debt_obligations`
 
 Supabase Auth is the source of truth for accounts and sessions. The database tables keep app-specific financial data keyed by the Supabase user id, with row-level security policies restricting each user to their own rows.
 
@@ -306,6 +307,64 @@ Score categories:
 - 80-100: Excellent
 - 50-79: Stable
 - 0-49: Risk
+
+## Debt Logic
+
+When a user marks that they have debt during setup, Finova stores a primary debt obligation with:
+
+- debt name
+- original debt amount
+- annual interest rate
+- remaining period in months
+- amount repaid
+- monthly EMI date
+- repayment goal: catch up, stay consistent, or pay ahead
+
+Remaining balance:
+
+```text
+Remaining Balance = Original Debt Amount - Amount Repaid
+```
+
+Estimated EMI uses the standard amortized loan formula:
+
+```text
+Monthly Rate = Annual Interest Rate / 100 / 12
+EMI = Principal * Monthly Rate * (1 + Monthly Rate)^Months / ((1 + Monthly Rate)^Months - 1)
+```
+
+If the annual interest rate is `0`, Finova uses:
+
+```text
+EMI = Remaining Balance / Remaining Months
+```
+
+Repayment progress:
+
+```text
+Repayment Progress % = Amount Repaid / Original Debt Amount * 100
+```
+
+EMI pressure:
+
+```text
+EMI Pressure = Estimated EMI / Monthly Income
+```
+
+Debt status:
+
+- `on-track`: EMI pressure is 25% or less
+- `watch`: EMI pressure is above 25% and up to 40%
+- `high-risk`: EMI pressure is above 40%
+- `paid`: remaining balance is zero
+
+Payoff date:
+
+```text
+Payoff Date = Current Month + Remaining Months - 1, clamped to the EMI day
+```
+
+If a month does not have the chosen EMI day, Finova uses that month’s final day. The dashboard creates one EMI reminder per month from now through the remaining period, capped at 240 months, and marks those due dates on the calendar with the estimated amount due and the selected goal.
 
 ## Local Development Notes
 

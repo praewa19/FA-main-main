@@ -244,6 +244,102 @@ export function recommendations({ categories, monthlyIncome, mode }) {
   return recs.slice(0, 6);
 }
 
+function addMonthsClamped(date, months, preferredDay) {
+  const candidate = new Date(date.getFullYear(), date.getMonth() + months, 1, 12);
+  const lastDay = new Date(candidate.getFullYear(), candidate.getMonth() + 1, 0).getDate();
+  candidate.setDate(Math.min(preferredDay, lastDay));
+  return candidate;
+}
+
+function dateKey(date) {
+  return date.toISOString().slice(0, 10);
+}
+
+export function estimateEmi({ principal, annualInterestRate, months }) {
+  if (months <= 0) return 0;
+  if (annualInterestRate <= 0) return Math.ceil(principal / months);
+  const monthlyRate = annualInterestRate / 100 / 12;
+  const factor = (1 + monthlyRate) ** months;
+  return Math.ceil((principal * monthlyRate * factor) / (factor - 1));
+}
+
+export function debtAnalytics(debts, monthlyIncome, today = new Date()) {
+  return debts.map((debt) => {
+    const originalAmount = Number(debt.originalAmount || 0);
+    const amountRepaid = Math.min(originalAmount, Number(debt.amountRepaid || 0));
+    const remainingBalance = Math.max(0, originalAmount - amountRepaid);
+    const remainingMonths = Number(debt.remainingMonths || 0);
+    const estimatedEmi = estimateEmi({
+      principal: remainingBalance,
+      annualInterestRate: Number(debt.annualInterestRate || 0),
+      months: remainingMonths,
+    });
+    const repaymentProgress = originalAmount > 0 ? Math.round((amountRepaid / originalAmount) * 100) : 0;
+    const emiRate = monthlyIncome > 0 ? estimatedEmi / monthlyIncome : 0;
+    const payoffDate = addMonthsClamped(today, Math.max(remainingMonths - 1, 0), Number(debt.emiDay || 1));
+    const goalLabel = debt.goal === "catch_up"
+      ? "Catch up if lagging"
+      : debt.goal === "pay_ahead"
+        ? "Pay ahead to finish early"
+        : "Stay consistent";
+    const status = remainingBalance <= 0 ? "paid" : emiRate > 0.4 ? "high-risk" : emiRate > 0.25 ? "watch" : "on-track";
+    const goalAction = debt.goal === "pay_ahead"
+      ? `Target more than ${money(estimatedEmi)} when possible to shorten the loan.`
+      : debt.goal === "catch_up"
+        ? `Prioritize the next ${money(estimatedEmi)} due date before adding discretionary spending.`
+        : `Keep paying ${money(estimatedEmi)} on the EMI date to stay on schedule.`;
+
+    return {
+      ...debt,
+      originalAmount,
+      amountRepaid,
+      remainingBalance,
+      remainingMonths,
+      estimatedEmi,
+      repaymentProgress,
+      emiRate,
+      payoffDate: dateKey(payoffDate),
+      goalLabel,
+      goalAction,
+      status,
+    };
+  });
+}
+
+export function debtEmiReminders(debts, today = new Date()) {
+  return debts.flatMap((debt) => {
+    if (!debt.remainingMonths || debt.remainingBalance <= 0) return [];
+    return Array.from({ length: Math.min(debt.remainingMonths, 240) }, (_, index) => {
+      const dueDate = addMonthsClamped(today, index, Number(debt.emiDay || 1));
+      return {
+        id: `${debt.id}-${dateKey(dueDate)}`,
+        debtId: debt.id,
+        name: debt.name,
+        date: dateKey(dueDate),
+        amountDue: debt.estimatedEmi,
+        goal: debt.goal,
+        goalLabel: debt.goalLabel,
+        status: debt.status,
+      };
+    });
+  });
+}
+
+export function debtAlerts(debts) {
+  return debts.flatMap((debt) => {
+    const alerts = [];
+    if (debt.emiRate > 0.4) {
+      alerts.push({ level: "risk", message: `${debt.name} EMI is ${Math.round(debt.emiRate * 100)}% of monthly income. Treat this as high repayment risk.` });
+    } else if (debt.emiRate > 0.25) {
+      alerts.push({ level: "warn", message: `${debt.name} EMI is ${Math.round(debt.emiRate * 100)}% of monthly income. Keep lifestyle spending tight around the due date.` });
+    }
+    if (debt.goal === "pay_ahead") {
+      alerts.push({ level: "info", message: `${debt.name}: paying above ${money(debt.estimatedEmi)} can shorten the estimated payoff timeline.` });
+    }
+    return alerts;
+  });
+}
+
 export function financialHealthScore({ categories, habits, monthlyIncome }) {
   const byType = Object.fromEntries(categories.map((category) => [category.type, category]));
   const savingsRate = (byType.savings?.monthlyLimit || 0) / monthlyIncome;

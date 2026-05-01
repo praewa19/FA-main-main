@@ -154,6 +154,39 @@ export function fromHabit(habit) {
   };
 }
 
+export function toDebtObligation(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    userId: row.user_id,
+    name: row.name,
+    originalAmount: row.original_amount,
+    annualInterestRate: row.annual_interest_rate,
+    remainingMonths: row.remaining_months,
+    amountRepaid: row.amount_repaid,
+    emiDay: row.emi_day,
+    goal: row.goal,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+export function fromDebtObligation(debt) {
+  return {
+    id: debt.id,
+    user_id: debt.userId,
+    name: debt.name,
+    original_amount: debt.originalAmount,
+    annual_interest_rate: debt.annualInterestRate,
+    remaining_months: debt.remainingMonths,
+    amount_repaid: debt.amountRepaid,
+    emi_day: debt.emiDay,
+    goal: debt.goal,
+    created_at: debt.createdAt,
+    updated_at: debt.updatedAt,
+  };
+}
+
 export async function getSessionData(userId) {
   const supabase = await createSupabaseServerClient();
   const [

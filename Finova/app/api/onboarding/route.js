@@ -1,8 +1,21 @@
 import { z } from "zod";
 import { createSupabaseServerClient, getCurrentUser, requireVerified } from "@/lib/auth";
 import { buildBudgetPlan } from "@/lib/budget";
-import { fromBudgetPlan, fromCategory, fromIncome, fromProfile } from "@/lib/data";
+import { fromBudgetPlan, fromCategory, fromDebtObligation, fromIncome, fromProfile } from "@/lib/data";
 import { id, nowIso, publicUser } from "@/lib/store";
+
+const debtSchema = z.object({
+  name: z.string().min(2).max(80),
+  originalAmount: z.coerce.number().positive(),
+  annualInterestRate: z.coerce.number().min(0),
+  remainingMonths: z.coerce.number().int().positive(),
+  amountRepaid: z.coerce.number().min(0),
+  emiDay: z.coerce.number().int().min(1).max(31),
+  goal: z.enum(["catch_up", "stay_consistent", "pay_ahead"]),
+}).refine((data) => data.amountRepaid <= data.originalAmount, {
+  message: "Amount repaid cannot be greater than the debt amount.",
+  path: ["amountRepaid"],
+});
 
 const schema = z.object({
   name: z.string().min(2),
@@ -12,6 +25,10 @@ const schema = z.object({
   priority: z.enum(["saving", "debt", "lifestyle"]),
   mode: z.enum(["student", "professional", "family"]),
   hasDebt: z.boolean(),
+  debt: debtSchema.optional(),
+}).refine((data) => !data.hasDebt || data.debt, {
+  message: "Complete debt details when debt obligations are enabled.",
+  path: ["debt"],
 });
 
 export async function POST(request) {
@@ -33,6 +50,7 @@ export async function POST(request) {
 
   const supabase = await createSupabaseServerClient();
   const deleteError = await Promise.all([
+    supabase.from("debt_obligations").delete().eq("user_id", current.id),
     supabase.from("categories").delete().eq("user_id", current.id),
     supabase.from("budget_plans").delete().eq("user_id", current.id),
     supabase.from("incomes").delete().eq("user_id", current.id),
@@ -41,7 +59,7 @@ export async function POST(request) {
 
   if (deleteError) return Response.json({ error: deleteError.message }, { status: 400 });
 
-  const inserts = await Promise.all([
+  const insertOps = [
     supabase.from("profiles").insert(fromProfile({
       id: id("profile"),
       userId: current.id,
@@ -62,8 +80,23 @@ export async function POST(request) {
     })),
     supabase.from("budget_plans").insert(fromBudgetPlan(generated.plan)),
     supabase.from("categories").insert(generated.categories.map(fromCategory)),
-  ]);
+  ];
+  if (parsed.data.hasDebt && parsed.data.debt) {
+    insertOps.push(supabase.from("debt_obligations").insert(fromDebtObligation({
+      id: id("debt"),
+      userId: current.id,
+      name: parsed.data.debt.name,
+      originalAmount: parsed.data.debt.originalAmount,
+      annualInterestRate: parsed.data.debt.annualInterestRate,
+      remainingMonths: parsed.data.debt.remainingMonths,
+      amountRepaid: parsed.data.debt.amountRepaid,
+      emiDay: parsed.data.debt.emiDay,
+      goal: parsed.data.debt.goal,
+      createdAt: nowIso(),
+    })));
+  }
 
+  const inserts = await Promise.all(insertOps);
   const insertError = inserts.find((result) => result.error)?.error;
   if (insertError) return Response.json({ error: insertError.message }, { status: 400 });
 

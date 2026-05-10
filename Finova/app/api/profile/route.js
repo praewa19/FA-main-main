@@ -80,6 +80,7 @@ export async function PATCH(request) {
         hasDebt: profile.hasDebt,
         priority: profile.priority,
         mode: profile.mode,
+        birthdate: profile.birthdate,
       });
       for (const table of ["categories", "budget_plans"]) {
         const { error } = await supabase.from(table).delete().eq("user_id", current.id);
@@ -116,17 +117,28 @@ export async function DELETE() {
   const authError = requireVerified(current);
   if (authError) return authError;
 
+  const tables = ["custom_habits", "savings_targets", "goals", "habits", "transactions", "debt_obligations", "categories", "budget_plans", "incomes", "profiles"];
   let admin;
   try {
     admin = createSupabaseAdminClient();
   } catch (error) {
-    return Response.json({ error: error.message }, { status: 500 });
+    const supabase = await createSupabaseServerClient();
+    for (const table of tables) {
+      const { error: deleteError } = await supabase.from(table).delete().eq("user_id", current.id);
+      if (deleteError && !["42P01", "PGRST205"].includes(deleteError.code)) {
+        return Response.json({ error: deleteError.message }, { status: 400 });
+      }
+    }
+    await supabase.auth.signOut();
+    return Response.json({
+      ok: true,
+      message: "App data deleted and you were signed out. Set SUPABASE_SERVICE_ROLE_KEY to also delete the Supabase Auth user.",
+    });
   }
 
-  const tables = ["habits", "transactions", "debt_obligations", "categories", "budget_plans", "incomes", "profiles"];
   for (const table of tables) {
     const { error } = await admin.from(table).delete().eq("user_id", current.id);
-    if (error) return Response.json({ error: error.message }, { status: 400 });
+    if (error && !["42P01", "PGRST205"].includes(error.code)) return Response.json({ error: error.message }, { status: 400 });
   }
 
   const { error } = await admin.auth.admin.deleteUser(current.id);

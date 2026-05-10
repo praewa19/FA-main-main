@@ -5,6 +5,9 @@ const root = dirname(fileURLToPath(import.meta.url));
 
 const nextConfig = {
   reactStrictMode: true,
+  experimental: {
+    cpus: 1,
+  },
   turbopack: {
     root,
   },

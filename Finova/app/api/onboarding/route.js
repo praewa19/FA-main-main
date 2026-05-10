@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { createSupabaseServerClient, getCurrentUser, requireVerified } from "@/lib/auth";
 import { applyDebtRepaymentTarget, buildBudgetPlan, debtAnalytics } from "@/lib/budget";
-import { fromBudgetPlan, fromCategory, fromDebtObligation, fromIncome, fromProfile } from "@/lib/data";
+import { fromBudgetPlan, fromCategory, fromDebtObligation, fromGoal, fromIncome, fromProfile } from "@/lib/data";
 import { id, nowIso, publicUser } from "@/lib/store";
 
 const debtSchema = z.object({
@@ -26,6 +26,12 @@ const schema = z.object({
   mode: z.enum(["student", "professional", "family"]),
   hasDebt: z.boolean(),
   debt: debtSchema.optional(),
+  goal: z.object({
+    name: z.string().min(2).max(80),
+    emoji: z.string().min(1).max(8),
+    target: z.coerce.number().positive(),
+    deadline: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  }).optional(),
 }).refine((data) => !data.hasDebt || data.debt, {
   message: "Complete debt details when debt obligations are enabled.",
   path: ["debt"],
@@ -46,6 +52,7 @@ export async function POST(request) {
     hasDebt: parsed.data.hasDebt,
     priority: parsed.data.priority,
     mode: parsed.data.mode,
+    birthdate: parsed.data.birthdate,
   });
   const debtInput = parsed.data.hasDebt && parsed.data.debt ? [{
     id: id("debt"),
@@ -63,10 +70,10 @@ export async function POST(request) {
   const categories = applyDebtRepaymentTarget(generated.categories, debtTargets);
 
   const supabase = await createSupabaseServerClient();
-  const cleanupTables = ["debt_obligations", "categories", "budget_plans", "incomes", "profiles"];
+  const cleanupTables = ["custom_habits", "savings_targets", "goals", "debt_obligations", "categories", "budget_plans", "incomes", "profiles"];
   for (const table of cleanupTables) {
     const { error } = await supabase.from(table).delete().eq("user_id", current.id);
-    if (error) return Response.json({ error: error.message }, { status: 400 });
+    if (error && !["42P01", "PGRST205"].includes(error.code)) return Response.json({ error: error.message }, { status: 400 });
   }
 
   const profile = fromProfile({
@@ -102,6 +109,23 @@ export async function POST(request) {
   if (parsed.data.hasDebt && parsed.data.debt) {
     const { error: debtError } = await supabase.from("debt_obligations").insert(fromDebtObligation(debtInput[0]));
     if (debtError) return Response.json({ error: debtError.message }, { status: 400 });
+  }
+
+  if (parsed.data.goal) {
+    const goal = fromGoal({
+      id: id("goal"),
+      userId: current.id,
+      name: parsed.data.goal.name,
+      emoji: parsed.data.goal.emoji,
+      target: parsed.data.goal.target,
+      current: 0,
+      deadline: parsed.data.goal.deadline,
+      priority: "high",
+      createdAt: nowIso(),
+      updatedAt: nowIso(),
+    });
+    const { error: goalError } = await supabase.from("goals").insert(goal);
+    if (goalError && !["42P01", "PGRST205"].includes(goalError.code)) return Response.json({ error: goalError.message }, { status: 400 });
   }
 
   return Response.json({ user: publicUser({ ...current, onboardingComplete: true }) });

@@ -15,7 +15,7 @@ export const categoryMeta = {
     items: ["Credit card dues", "Personal loans", "Home loans", "Education loans"],
   },
   savings: {
-    label: "Financial Goals",
+    label: "Savings",
     priority: "Medium",
     weight: 1.2,
     items: ["Savings", "Investments", "Emergency fund"],
@@ -25,6 +25,12 @@ export const categoryMeta = {
     priority: "Low",
     weight: 1,
     items: ["Food ordering", "Shopping", "Entertainment", "Subscriptions"],
+  },
+  credit: {
+    label: "Credit",
+    priority: "Income",
+    weight: 0,
+    items: ["Salary", "Refunds", "Cashback", "Bonuses"],
   },
 };
 
@@ -47,8 +53,9 @@ function normalizePercents(percentages) {
   return Object.fromEntries(Object.entries(percentages).map(([key, value]) => [key, value / total]));
 }
 
-export function allocationPercentages({ monthlyIncome, hasDebt, priority = "saving", mode = "professional" }) {
+export function allocationPercentages({ monthlyIncome, hasDebt, priority = "saving", mode = "professional", age = null }) {
   const band = incomeBand(monthlyIncome);
+  const targetSavings = recommendedSavingsRateForAge(age);
   let percentages = hasDebt
     ? { essentials: 0.5, debt: 0.2, savings: 0.2, lifestyle: 0.1 }
     : { essentials: 0.5, debt: 0, savings: 0.2, lifestyle: 0.3 };
@@ -92,15 +99,37 @@ export function allocationPercentages({ monthlyIncome, hasDebt, priority = "savi
     percentages.lifestyle -= 0.08;
   }
 
-  percentages.savings = Math.max(percentages.savings, 0.1);
+  percentages.savings = Math.max(percentages.savings, targetSavings);
   percentages.lifestyle = Math.max(percentages.lifestyle, 0.05);
   percentages.debt = hasDebt ? Math.max(percentages.debt, 0.1) : 0;
 
   return normalizePercents(percentages);
 }
 
-export function buildBudgetPlan({ userId, monthlyIncome, hasDebt, priority, mode }) {
-  const percentages = allocationPercentages({ monthlyIncome, hasDebt, priority, mode });
+export function ageFromBirthdate(birthdate, today = new Date()) {
+  if (!birthdate) return null;
+  const born = new Date(`${birthdate}T12:00:00`);
+  if (Number.isNaN(born.getTime())) return null;
+  let age = today.getFullYear() - born.getFullYear();
+  const hasHadBirthday = today.getMonth() > born.getMonth()
+    || (today.getMonth() === born.getMonth() && today.getDate() >= born.getDate());
+  if (!hasHadBirthday) age -= 1;
+  return age;
+}
+
+export function recommendedSavingsRateForAge(age) {
+  if (!Number.isFinite(age)) return 0.2;
+  if (age < 25) return 0.15;
+  if (age < 35) return 0.2;
+  if (age < 45) return 0.22;
+  if (age < 55) return 0.25;
+  if (age < 65) return 0.22;
+  return 0.18;
+}
+
+export function buildBudgetPlan({ userId, monthlyIncome, hasDebt, priority, mode, birthdate }) {
+  const age = ageFromBirthdate(birthdate);
+  const percentages = allocationPercentages({ monthlyIncome, hasDebt, priority, mode, age });
   const planId = id("plan");
   const categories = ["essentials", "debt", "savings", "lifestyle"]
     .filter((type) => hasDebt || type !== "debt")
@@ -151,6 +180,7 @@ export function enrichCategories(categories, transactions, date = new Date()) {
   const { day, total } = monthProgress(date);
   return categories.map((category) => {
     const actual = transactions
+      .filter((transaction) => transaction.categoryType !== "credit")
       .filter((transaction) => transaction.categoryType === category.type)
       .reduce((sum, transaction) => sum + Number(transaction.amount), 0);
     const expected = Math.round((day / total) * category.monthlyLimit);

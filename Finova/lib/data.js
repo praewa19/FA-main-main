@@ -129,6 +129,99 @@ export function fromTransaction(transaction) {
   };
 }
 
+export function toGoal(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    userId: row.user_id,
+    name: row.name,
+    emoji: row.emoji,
+    target: row.target,
+    current: row.current,
+    deadline: row.deadline,
+    priority: row.priority,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+export function fromGoal(goal) {
+  return {
+    id: goal.id,
+    user_id: goal.userId,
+    name: goal.name,
+    emoji: goal.emoji,
+    target: goal.target,
+    current: goal.current,
+    deadline: goal.deadline,
+    priority: goal.priority,
+    created_at: goal.createdAt,
+    updated_at: goal.updatedAt,
+  };
+}
+
+export function toSavingsTarget(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    userId: row.user_id,
+    name: row.name,
+    target: row.target,
+    current: row.current,
+    monthlyContribution: row.monthly_contribution,
+    deadline: row.deadline,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+export function fromSavingsTarget(target) {
+  return {
+    id: target.id,
+    user_id: target.userId,
+    name: target.name,
+    target: target.target,
+    current: target.current,
+    monthly_contribution: target.monthlyContribution,
+    deadline: target.deadline,
+    created_at: target.createdAt,
+    updated_at: target.updatedAt,
+  };
+}
+
+export function toCustomHabit(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    userId: row.user_id,
+    name: row.name,
+    description: row.description,
+    icon: row.icon,
+    targetDays: row.target_days,
+    completedToday: row.completed_today,
+    streak: row.streak,
+    bestStreak: row.best_streak,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+export function fromCustomHabit(habit) {
+  return {
+    id: habit.id,
+    user_id: habit.userId,
+    name: habit.name,
+    description: habit.description,
+    icon: habit.icon,
+    target_days: habit.targetDays,
+    completed_today: habit.completedToday,
+    streak: habit.streak,
+    best_streak: habit.bestStreak,
+    created_at: habit.createdAt,
+    updated_at: habit.updatedAt,
+  };
+}
+
 export function toHabit(row) {
   if (!row) return null;
   return {

@@ -4,7 +4,7 @@ import { fromTransaction, toTransaction } from "@/lib/data";
 import { id, nowIso } from "@/lib/store";
 
 const schema = z.object({
-  categoryType: z.enum(["essentials", "debt", "savings", "lifestyle"]),
+  categoryType: z.string().min(2).max(48),
   amount: z.coerce.number().positive(),
   note: z.string().max(120).optional(),
   date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
@@ -12,7 +12,7 @@ const schema = z.object({
 
 const updateSchema = z.object({
   id: z.string().min(1),
-  categoryType: z.enum(["essentials", "debt", "savings", "lifestyle"]).optional(),
+  categoryType: z.string().min(2).max(48).optional(),
   amount: z.coerce.number().positive(),
   note: z.string().max(120).optional(),
 });
@@ -49,7 +49,14 @@ export async function POST(request) {
     createdAt: nowIso(),
   };
   const { data, error } = await supabase.from("transactions").insert(fromTransaction(created)).select("*").single();
-  if (error) return Response.json({ error: error.message }, { status: 400 });
+  if (error) {
+    const isCategoryConstraint = error.message?.includes("transactions_category_type_check");
+    return Response.json({
+      error: isCategoryConstraint
+        ? "Your database still has the old transaction category constraint. Run the latest Supabase migration so credit and custom categories can be saved."
+        : error.message,
+    }, { status: 400 });
+  }
 
   return Response.json({ transaction: toTransaction(data) });
 }
@@ -76,7 +83,14 @@ export async function PATCH(request) {
     .select("*")
     .maybeSingle();
 
-  if (error) return Response.json({ error: error.message }, { status: 400 });
+  if (error) {
+    const isCategoryConstraint = error.message?.includes("transactions_category_type_check");
+    return Response.json({
+      error: isCategoryConstraint
+        ? "Your database still has the old transaction category constraint. Run the latest Supabase migration so credit and custom categories can be saved."
+        : error.message,
+    }, { status: 400 });
+  }
   if (!data) return Response.json({ error: "Activity not found." }, { status: 404 });
   return Response.json({ transaction: toTransaction(data) });
 }

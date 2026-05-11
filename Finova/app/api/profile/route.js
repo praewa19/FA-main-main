@@ -117,7 +117,7 @@ export async function DELETE() {
   const authError = requireVerified(current);
   if (authError) return authError;
 
-  const tables = ["custom_habits", "savings_targets", "goals", "habits", "transactions", "debt_obligations", "categories", "budget_plans", "incomes", "profiles"];
+  const tables = ["habit_logs", "assistant_conversations", "investment_holdings", "custom_habits", "savings_targets", "goals", "habits", "transactions", "debt_obligations", "categories", "budget_plans", "incomes", "profiles"];
   let admin;
   try {
     admin = createSupabaseAdminClient();

@@ -1,7 +1,8 @@
 import { z } from "zod";
 import { createSupabaseServerClient, getCurrentUser, requireVerified } from "@/lib/auth";
 import { applyDebtRepaymentTarget, buildBudgetPlan, debtAnalytics } from "@/lib/budget";
-import { fromBudgetPlan, fromCategory, fromDebtObligation, fromGoal, fromIncome, fromProfile } from "@/lib/data";
+import { fromBudgetPlan, fromCategory, fromDebtObligation, fromGoal, fromIncome, fromProfile, fromSavingsTarget } from "@/lib/data";
+import { invalidateCachedMarketSnapshot } from "@/lib/market-session-cache";
 import { id, nowIso, publicUser } from "@/lib/store";
 
 const debtSchema = z.object({
@@ -22,6 +23,7 @@ const schema = z.object({
   birthdate: z.string().min(8),
   incomePeriod: z.enum(["monthly", "annual"]),
   incomeAmount: z.coerce.number().positive(),
+  savingsGoalAmount: z.coerce.number().positive(),
   priority: z.enum(["saving", "debt", "lifestyle"]),
   mode: z.enum(["student", "professional", "family"]),
   hasDebt: z.boolean(),
@@ -70,7 +72,22 @@ export async function POST(request) {
   const categories = applyDebtRepaymentTarget(generated.categories, debtTargets);
 
   const supabase = await createSupabaseServerClient();
-  const cleanupTables = ["custom_habits", "savings_targets", "goals", "debt_obligations", "categories", "budget_plans", "incomes", "profiles"];
+  invalidateCachedMarketSnapshot(current.id);
+  const cleanupTables = [
+    "habit_logs",
+    "assistant_conversations",
+    "transactions",
+    "investment_holdings",
+    "custom_habits",
+    "habits",
+    "savings_targets",
+    "goals",
+    "debt_obligations",
+    "categories",
+    "budget_plans",
+    "incomes",
+    "profiles",
+  ];
   for (const table of cleanupTables) {
     const { error } = await supabase.from(table).delete().eq("user_id", current.id);
     if (error && !["42P01", "PGRST205"].includes(error.code)) return Response.json({ error: error.message }, { status: 400 });
@@ -127,6 +144,22 @@ export async function POST(request) {
     const { error: goalError } = await supabase.from("goals").insert(goal);
     if (goalError && !["42P01", "PGRST205"].includes(goalError.code)) return Response.json({ error: goalError.message }, { status: 400 });
   }
+
+  const savingsTarget = fromSavingsTarget({
+    id: id("sav"),
+    userId: current.id,
+    name: parsed.data.incomePeriod === "annual" ? "Annual Savings Goal" : "Monthly Savings Goal",
+    target: parsed.data.savingsGoalAmount,
+    current: 0,
+    monthlyContribution: parsed.data.incomePeriod === "annual"
+      ? Math.round(parsed.data.savingsGoalAmount / 12)
+      : parsed.data.savingsGoalAmount,
+    deadline: null,
+    createdAt: nowIso(),
+    updatedAt: nowIso(),
+  });
+  const { error: savingsError } = await supabase.from("savings_targets").insert(savingsTarget);
+  if (savingsError && !["42P01", "PGRST205"].includes(savingsError.code)) return Response.json({ error: savingsError.message }, { status: 400 });
 
   return Response.json({ user: publicUser({ ...current, onboardingComplete: true }) });
 }

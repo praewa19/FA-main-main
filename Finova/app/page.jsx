@@ -122,7 +122,7 @@ const DashboardPage = memo(function DashboardPage({ categories, chartData, pieDa
         <BudgetAllocationList categories={categories} />
       </section>
       <section className="analytics-grid">
-        <ActualExpectedLineChart chartData={chartData} />
+        <MonthlyPaceTrackerChart chartData={chartData} />
         <CategoryDistributionChart pieData={pieData} />
       </section>
     </div>
@@ -136,15 +136,16 @@ const BudgetAllocationList = memo(function BudgetAllocationList({ categories }) 
       <div className="allocation-grid">
         {categories.map((category) => {
           const percentage = category.monthlyLimit > 0 ? Math.round((category.spent / category.monthlyLimit) * 100) : 0;
+          const displayPercentage = Math.max(0, percentage);
           const remaining = category.monthlyLimit - category.spent;
           return (
             <div className="allocation-tile" key={category.id}>
               <div className="allocation-tile-top">
                 <strong>{category.label.replace(" / Discretionary", "")}</strong>
-                <span>{Math.min(100, percentage)}%</span>
+                <span>{displayPercentage}%</span>
               </div>
               <div className="allocation-track">
-                <span style={{ width: `${Math.min(100, Math.max(0, percentage))}%`, background: categoryColors[category.type] || "#8B5CF6" }} />
+                <span style={{ width: `${Math.min(100, displayPercentage)}%`, background: categoryColors[category.type] || "#8B5CF6" }} />
               </div>
               <div className="allocation-money">
                 <span>{formatMoney(category.spent)} / {formatMoney(category.monthlyLimit)}</span>
@@ -242,7 +243,7 @@ const BudgetPage = memo(function BudgetPage({ income, categories, hasDebt, savin
         method: "PATCH",
         body: JSON.stringify({
           ...incomeForm,
-          incomeAmount: Number(incomeForm.incomeAmount),
+          incomeAmount: parseMoneyInput(incomeForm.incomeAmount),
           categories: draft,
           changedType,
         }),
@@ -287,7 +288,7 @@ const BudgetPage = memo(function BudgetPage({ income, categories, hasDebt, savin
                   <option value="monthly">Monthly</option>
                   <option value="annual">Annual</option>
                 </select>
-                <input type="number" min="1" value={incomeForm.incomeAmount} onChange={(event) => setIncomeForm({ ...incomeForm, incomeAmount: event.target.value })} />
+                <input value={formatMoneyInput(incomeForm.incomeAmount)} inputMode="decimal" onChange={(event) => setIncomeForm({ ...incomeForm, incomeAmount: formatMoneyInput(event.target.value) })} />
               </div>
               <button className="btn" type="button" onClick={() => save()}><Save size={17} />Save income</button>
             </div>
@@ -358,8 +359,8 @@ const BudgetPage = memo(function BudgetPage({ income, categories, hasDebt, savin
   );
 });
 
-const ActualExpectedLineChart = dynamic(() => import("./components/DashboardCharts").then((mod) => mod.ActualExpectedLineChart), {
-  loading: () => <ChartSkeleton title="Spending Analytics" />,
+const MonthlyPaceTrackerChart = dynamic(() => import("./components/DashboardCharts").then((mod) => mod.MonthlyPaceTrackerChart), {
+  loading: () => <ChartSkeleton title="Monthly Pace Tracker" />,
   ssr: false,
 });
 
@@ -369,12 +370,17 @@ const BudgetAllocationChart = dynamic(() => import("./components/DashboardCharts
 });
 
 const CategoryDistributionChart = dynamic(() => import("./components/DashboardCharts").then((mod) => mod.CategoryDistributionChart), {
-  loading: () => <ChartSkeleton title="Category Distribution" />,
+  loading: () => <ChartSkeleton title="Spending Distribution" />,
   ssr: false,
 });
 
 const BehaviorRadarChart = dynamic(() => import("./components/DashboardCharts").then((mod) => mod.BehaviorRadarChart), {
   loading: () => <ChartSkeleton title="Behavior Analysis" />,
+  ssr: false,
+});
+
+const HealthScoreTrendChart = dynamic(() => import("./components/DashboardCharts").then((mod) => mod.HealthScoreTrendChart), {
+  loading: () => <ChartSkeleton title="Health Score Trend" />,
   ssr: false,
 });
 
@@ -394,7 +400,85 @@ const categoryLabels = {
   credit: "Credit",
 };
 
+const GOAL_CATEGORY_PREFIX = "goal:";
+
 const goalEmojiOptions = ["💰", "🏠", "🚗", "✈️", "🎓", "💻", "💍", "🏖️", "📈", "🛡️", "🎯", "⭐"];
+const PORTFOLIO_SESSION_CACHE_KEY = "finova.market.portfolio";
+
+function readPortfolioSessionCache() {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.sessionStorage.getItem(PORTFOLIO_SESSION_CACHE_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
+function writePortfolioSessionCache(portfolio) {
+  if (typeof window === "undefined") return;
+  try {
+    window.sessionStorage.setItem(PORTFOLIO_SESSION_CACHE_KEY, JSON.stringify(portfolio));
+  } catch {
+    // Ignore storage write failures and continue with live state.
+  }
+}
+
+function clearPortfolioSessionCache() {
+  if (typeof window === "undefined") return;
+  try {
+    window.sessionStorage.removeItem(PORTFOLIO_SESSION_CACHE_KEY);
+  } catch {
+    // Ignore storage cleanup failures.
+  }
+}
+
+function goalAccent(goal) {
+  const priority = String(goal?.priority || "medium").toLowerCase();
+  if (priority === "high") return { color: "#22c55e", badge: "goal-priority-high" };
+  if (priority === "low") return { color: "#8b5cf6", badge: "goal-priority-low" };
+  return { color: "#f59e0b", badge: "goal-priority-medium" };
+}
+
+function goalCategoryType(goalId) {
+  return `${GOAL_CATEGORY_PREFIX}${goalId}`;
+}
+
+function isGoalCategoryType(categoryType = "") {
+  return categoryType.startsWith(GOAL_CATEGORY_PREFIX);
+}
+
+function buildGoalCategory(goal) {
+  return {
+    type: goalCategoryType(goal.id),
+    label: goal.name,
+    goalId: goal.id,
+    color: goalAccent(goal).color,
+  };
+}
+
+function buildTransactionCategories(categories = [], goals = []) {
+  return [
+    ...categories.map((category) => ({ ...category, goalId: "" })),
+    ...goals.map(buildGoalCategory),
+  ];
+}
+
+function findGoalByCategoryType(goals = [], categoryType = "") {
+  if (!isGoalCategoryType(categoryType)) return null;
+  const goalId = categoryType.slice(GOAL_CATEGORY_PREFIX.length);
+  return goals.find((goal) => goal.id === goalId) || null;
+}
+
+function categoryLabelForTransaction(transaction, categories = [], goals = []) {
+  const goal = transaction.goalId
+    ? goals.find((item) => item.id === transaction.goalId)
+    : findGoalByCategoryType(goals, transaction.categoryType);
+  if (goal) return goal.name;
+  return categories.find((category) => category.type === transaction.categoryType)?.label
+    || categoryLabels[transaction.categoryType]
+    || transaction.categoryType;
+}
 
 function formatMoney(value) {
   return new Intl.NumberFormat("en-IN", {
@@ -402,6 +486,289 @@ function formatMoney(value) {
     currency: "INR",
     maximumFractionDigits: 0,
   }).format(value || 0);
+}
+
+function formatMarketMoney(value, currency = "INR") {
+  return new Intl.NumberFormat("en-IN", {
+    style: "currency",
+    currency: currency || "INR",
+    maximumFractionDigits: currency === "JPY" ? 0 : 2,
+  }).format(value || 0);
+}
+
+function formatSignedMoney(value, currency = "INR") {
+  const amount = Number(value || 0);
+  return `${amount >= 0 ? "+" : "-"}${formatMarketMoney(Math.abs(amount), currency)}`;
+}
+
+function formatSignedPercent(value) {
+  const amount = Number(value || 0);
+  return `${amount >= 0 ? "+" : ""}${amount.toFixed(2)}%`;
+}
+
+function normalizeBirthdateInput(value = "") {
+  const trimmed = String(value || "").trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) return trimmed;
+  const match = trimmed.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+  if (!match) return "";
+  const [, day, month, year] = match;
+  return `${year}-${month}-${day}`;
+}
+
+function formatBirthdateDisplay(value = "") {
+  if (!value) return "";
+  if (/^\d{2}\/\d{2}\/\d{4}$/.test(value)) return value;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    const [year, month, day] = value.split("-");
+    return `${day}/${month}/${year}`;
+  }
+  return value;
+}
+
+function formatDateTyping(value = "") {
+  const digits = String(value || "").replace(/\D/g, "").slice(0, 8);
+  if (digits.length <= 2) return digits;
+  if (digits.length <= 4) return `${digits.slice(0, 2)}/${digits.slice(2)}`;
+  return `${digits.slice(0, 2)}/${digits.slice(2, 4)}/${digits.slice(4)}`;
+}
+
+function normalizeDisplayDateInput(value = "") {
+  const trimmed = String(value || "").trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) return trimmed;
+  const match = trimmed.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+  if (!match) return "";
+  const [, day, month, year] = match;
+  return `${year}-${month}-${day}`;
+}
+
+function formatDisplayDateInput(value = "") {
+  if (!value) return "";
+  if (/^\d{2}\/\d{2}\/\d{4}$/.test(value)) return value;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    const [year, month, day] = value.split("-");
+    return `${day}/${month}/${year}`;
+  }
+  return formatDateTyping(value);
+}
+
+function sanitizeMoneyInput(value = "") {
+  const raw = String(value || "").replace(/,/g, "").replace(/[^\d.]/g, "");
+  const [integerPart = "", ...decimalParts] = raw.split(".");
+  const decimals = decimalParts.join("").slice(0, 2);
+  const hasDot = raw.includes(".");
+  const integer = integerPart.replace(/^0+(?=\d)/, "");
+  if (!integer && !decimals && !hasDot) return "";
+  if (hasDot) return `${integer || "0"}.${decimals}`;
+  return integer || "0";
+}
+
+function formatMoneyInput(value = "") {
+  const sanitized = sanitizeMoneyInput(value);
+  if (!sanitized) return "";
+  const hasDot = sanitized.includes(".");
+  const endsWithDot = sanitized.endsWith(".");
+  const [integerPart = "0", decimals = ""] = sanitized.split(".");
+  const formattedInteger = new Intl.NumberFormat("en-IN", {
+    maximumFractionDigits: 0,
+  }).format(Number(integerPart || 0));
+  if (hasDot) return `${formattedInteger}.${endsWithDot ? "" : decimals}`;
+  return formattedInteger;
+}
+
+function parseMoneyInput(value = "") {
+  const normalized = String(value || "").replace(/,/g, "").trim();
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function formatShortIndiaDate(value = "") {
+  if (!value) return "";
+  const date = new Date(`${value}T12:00:00+05:30`);
+  if (Number.isNaN(date.getTime())) return value;
+  return new Intl.DateTimeFormat("en-IN", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+    timeZone: "Asia/Kolkata",
+  }).format(date);
+}
+
+function monthKeyFromDate(date = new Date()) {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
+}
+
+function monthLabelFromKey(key = "") {
+  if (!/^\d{4}-\d{2}$/.test(key)) return "";
+  const date = new Date(`${key}-01T12:00:00+05:30`);
+  return new Intl.DateTimeFormat("en-IN", {
+    month: "long",
+    year: "numeric",
+    timeZone: "Asia/Kolkata",
+  }).format(date);
+}
+
+function buildLineCoordinates(points = [], width = 100, height = 36) {
+  if (!points.length) return [];
+  const verticalInset = Math.max(2, Math.round(height * 0.08));
+  const drawableHeight = Math.max(1, height - (verticalInset * 2));
+  const prices = points.map((point) => Number(point.price || 0));
+  const min = Math.min(...prices);
+  const max = Math.max(...prices);
+  const range = max - min || 1;
+
+  return points.map((point, index) => {
+    const x = points.length === 1 ? width / 2 : (index / (points.length - 1)) * width;
+    const y = verticalInset + (drawableHeight - (((Number(point.price || 0) - min) / range) * drawableHeight));
+    return {
+      x: Number(x.toFixed(2)),
+      y: Number(y.toFixed(2)),
+    };
+  });
+}
+
+function buildLinePath(points = [], width = 100, height = 36, smooth = false) {
+  const coordinates = buildLineCoordinates(points, width, height);
+  if (!coordinates.length) return "";
+
+  if (coordinates.length === 1) {
+    return `M ${coordinates[0].x} ${coordinates[0].y}`;
+  }
+
+  if (!smooth) {
+    return coordinates.map((point, index) => `${index === 0 ? "M" : "L"} ${point.x} ${point.y}`).join(" ");
+  }
+
+  return coordinates.reduce((path, point, index) => {
+    if (index === 0) return `M ${point.x} ${point.y}`;
+    const previous = coordinates[index - 1];
+    const controlX = Number((((previous.x + point.x) / 2)).toFixed(2));
+    return `${path} C ${controlX} ${previous.y}, ${controlX} ${point.y}, ${point.x} ${point.y}`;
+  }, "");
+}
+
+function mergePortfolioSeries(positions = []) {
+  const priced = positions.filter((position) => (position.chart || []).length);
+  if (!priced.length) return [];
+  const maxLength = Math.max(...priced.map((position) => position.chart.length));
+  return Array.from({ length: maxLength }, (_, index) => ({
+    label: priced[0].chart[index]?.label || `P${index + 1}`,
+    price: priced.reduce((sum, position) => {
+      const point = position.chart[index];
+      return sum + Number(point?.price || 0) * Number(position.shares || 0);
+    }, 0),
+  })).filter((point) => point.price > 0);
+}
+
+function assistantQuestionsForPage(page = "dashboard") {
+  switch (page) {
+    case "budget":
+      return [
+        "Which category should I cut first without hurting savings?",
+        "How balanced is this budget for my current income?",
+        "What tradeoff would improve my next 30 days most?",
+      ];
+    case "transactions":
+      return [
+        "What is the main spending pattern on this page?",
+        "Which recent transactions look avoidable?",
+        "How far off pace am I this month?",
+      ];
+    case "goals":
+      return [
+        "Which goal needs more contribution pace?",
+        "How should I prioritize these goals?",
+        "What is my biggest goal risk right now?",
+      ];
+    case "savings":
+      return [
+        "Is my savings rate strong enough for my profile?",
+        "How much should I move into savings this month?",
+        "What is the cleanest way to close my savings gap?",
+      ];
+    case "analytics":
+      return [
+        "What is driving my financial score most?",
+        "Which trend matters most in this dashboard?",
+        "What should I fix first based on these analytics?",
+      ];
+    case "investments":
+      return [
+        "What does my portfolio concentration look like?",
+        "Which holding is driving unrealized performance most?",
+        "How do my holdings compare with the commodity watchlist today?",
+      ];
+    default:
+      return [
+        "What should I focus on first this week?",
+        "What is the clearest risk in my finances right now?",
+        "Give me three specific actions based on this page.",
+      ];
+  }
+}
+
+function pageLabelForAssistant(page = "dashboard") {
+  return {
+    dashboard: "Dashboard",
+    budget: "Budget",
+    transactions: "Transactions",
+    goals: "Goals",
+    habits: "Habits",
+    savings: "Savings",
+    analytics: "Analytics",
+    investments: "Investments",
+    assistant: "AI Assistant",
+    settings: "Settings",
+    overview: "Overview",
+  }[page] || "Dashboard";
+}
+
+function assistantConversationTitle(text = "") {
+  const clean = String(text || "").replace(/\s+/g, " ").trim();
+  if (!clean) return "New Chat";
+  return clean.length > 56 ? `${clean.slice(0, 56).trim()}...` : clean;
+}
+
+function parseInsightCard(text = "") {
+  const clean = String(text || "").trim();
+  if (!clean) return { title: "Insight", body: "" };
+  const pipeIndex = clean.indexOf("|");
+  if (pipeIndex >= 0) {
+    return {
+      title: clean.slice(0, pipeIndex).trim() || "Insight",
+      body: clean.slice(pipeIndex + 1).trim(),
+    };
+  }
+  const colonIndex = clean.indexOf(":");
+  if (colonIndex >= 0) {
+    return {
+      title: clean.slice(0, colonIndex).trim() || "Insight",
+      body: clean.slice(colonIndex + 1).trim(),
+    };
+  }
+  return { title: "Insight", body: clean };
+}
+
+function assistantMessage(role, content, modelUsed = "") {
+  return {
+    role,
+    content,
+    ...(modelUsed ? { modelUsed } : {}),
+    createdAt: new Date().toISOString(),
+  };
+}
+
+function formatAssistantTimestamp(value) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toLocaleString("en-IN", {
+    timeZone: "Asia/Kolkata",
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
 }
 
 async function api(path, options = {}) {
@@ -456,6 +823,7 @@ export default function Home() {
 
   const logout = useCallback(async () => {
     await api("/api/auth/logout", { method: "POST" });
+    clearPortfolioSessionCache();
     setSession({ user: null, profile: null, income: null });
     setSummary(null);
     setActiveDashboardTab("overview");
@@ -689,6 +1057,7 @@ function Onboarding({ onDone }) {
     birthdate: "",
     incomePeriod: "monthly",
     incomeAmount: "",
+    savingsGoalAmount: "",
     priority: "saving",
     mode: "professional",
     hasDebt: false,
@@ -713,23 +1082,31 @@ function Onboarding({ onDone }) {
   async function submit(event) {
     event.preventDefault();
     setError("");
+    const normalizedBirthdate = normalizeBirthdateInput(form.birthdate);
+    if (!normalizedBirthdate) {
+      setError("Enter birthdate in DD/MM/YYYY format.");
+      return;
+    }
     try {
       await api("/api/onboarding", {
         method: "POST",
         body: JSON.stringify({
           ...form,
-          incomeAmount: Number(form.incomeAmount),
+          birthdate: normalizedBirthdate,
+          incomeAmount: parseMoneyInput(form.incomeAmount),
+          savingsGoalAmount: parseMoneyInput(form.savingsGoalAmount),
           debt: form.hasDebt ? {
             ...form.debt,
-            originalAmount: Number(form.debt.originalAmount),
+            originalAmount: parseMoneyInput(form.debt.originalAmount),
             annualInterestRate: Number(form.debt.annualInterestRate || 0),
             remainingMonths: Number(form.debt.remainingMonths),
-            amountRepaid: Number(form.debt.amountRepaid || 0),
+            amountRepaid: parseMoneyInput(form.debt.amountRepaid || 0),
             emiDay: Number(form.debt.emiDay),
           } : undefined,
           goal: form.goal.name ? {
             ...form.goal,
-            target: Number(form.goal.target),
+            target: parseMoneyInput(form.goal.target),
+            deadline: normalizeDisplayDateInput(form.goal.deadline),
           } : undefined,
         }),
       });
@@ -755,7 +1132,14 @@ function Onboarding({ onDone }) {
           </div>
           <div className="field">
             <label>Birthdate</label>
-            <input type="date" value={form.birthdate} onChange={(event) => setForm({ ...form, birthdate: event.target.value })} required />
+            <input
+              value={formatBirthdateDisplay(form.birthdate)}
+              onChange={(event) => setForm({ ...form, birthdate: formatDateTyping(event.target.value) })}
+              placeholder="DD/MM/YYYY"
+              inputMode="numeric"
+              required
+            />
+            <p className="hint">Use day / month / year.</p>
           </div>
         </div>
         <div className="grid-2">
@@ -768,8 +1152,21 @@ function Onboarding({ onDone }) {
           </div>
           <div className="field">
             <label>Income Amount</label>
-            <input type="number" min="1" value={form.incomeAmount} onChange={(event) => setForm({ ...form, incomeAmount: event.target.value })} required />
+            <input value={formatMoneyInput(form.incomeAmount)} inputMode="decimal" onChange={(event) => setForm({ ...form, incomeAmount: formatMoneyInput(event.target.value) })} required />
           </div>
+        </div>
+        <div className="field">
+          <label>{form.incomePeriod === "annual" ? "Annual Savings Goal" : "Monthly Savings Goal"}</label>
+          <input
+            value={formatMoneyInput(form.savingsGoalAmount)}
+            inputMode="decimal"
+            onChange={(event) => setForm({ ...form, savingsGoalAmount: formatMoneyInput(event.target.value) })}
+            placeholder={form.incomePeriod === "annual" ? "How much do you want to save this year?" : "How much do you want to save each month?"}
+            required
+          />
+          <p className="hint">
+            This becomes your default savings target and gives the Savings page a real benchmark instead of only the assistant recommendation.
+          </p>
         </div>
         <div className="field">
           <label>Priority</label>
@@ -819,7 +1216,7 @@ function Onboarding({ onDone }) {
               </div>
               <div className="field">
                 <label>Debt Amount</label>
-                <input type="number" min="1" value={form.debt.originalAmount} onChange={(event) => setForm({ ...form, debt: { ...form.debt, originalAmount: event.target.value } })} required={form.hasDebt} />
+                <input value={formatMoneyInput(form.debt.originalAmount)} inputMode="decimal" onChange={(event) => setForm({ ...form, debt: { ...form.debt, originalAmount: formatMoneyInput(event.target.value) } })} required={form.hasDebt} />
               </div>
             </div>
             <div className="grid-2">
@@ -835,7 +1232,7 @@ function Onboarding({ onDone }) {
             <div className="grid-2">
               <div className="field">
                 <label>Amount Repaid</label>
-                <input type="number" min="0" value={form.debt.amountRepaid} onChange={(event) => setForm({ ...form, debt: { ...form.debt, amountRepaid: event.target.value } })} placeholder="0" required={form.hasDebt} />
+                <input value={formatMoneyInput(form.debt.amountRepaid)} inputMode="decimal" onChange={(event) => setForm({ ...form, debt: { ...form.debt, amountRepaid: formatMoneyInput(event.target.value) } })} placeholder="0" required={form.hasDebt} />
               </div>
               <div className="field">
                 <label>Monthly EMI Date</label>
@@ -880,11 +1277,11 @@ function Onboarding({ onDone }) {
           <div className="grid-2">
             <div className="field">
               <label>Target Amount</label>
-              <input type="number" min="1" value={form.goal.target} onChange={(event) => setForm({ ...form, goal: { ...form.goal, target: event.target.value } })} />
+              <input value={formatMoneyInput(form.goal.target)} inputMode="decimal" onChange={(event) => setForm({ ...form, goal: { ...form.goal, target: formatMoneyInput(event.target.value) } })} />
             </div>
             <div className="field">
               <label>Finish By</label>
-              <input type="date" value={form.goal.deadline} onChange={(event) => setForm({ ...form, goal: { ...form.goal, deadline: event.target.value } })} />
+              <input value={formatDisplayDateInput(form.goal.deadline)} onChange={(event) => setForm({ ...form, goal: { ...form.goal, deadline: formatDateTyping(event.target.value) } })} placeholder="DD/MM/YYYY" inputMode="numeric" />
             </div>
           </div>
         </div>
@@ -907,12 +1304,35 @@ const navItems = [
   ["savings", PiggyBank, "Savings"],
   ["analytics", TrendingUp, "Analytics"],
   ["investments", TrendingDown, "Investments"],
+  ["assistant", Sparkles, "AI Assistant"],
   ["settings", Settings, "Settings"],
 ];
 
 const Dashboard = memo(function Dashboard({ user, summary, activeTab, isTabPending, onTab, onRefresh, onLogout, onDone }) {
   if (!summary) return null;
-  const { profile, income, categories, ranking, recommendations, health, alerts, metals, streak, habits, transactions, debtObligations, emiReminders, goals = [], savingsTargets = [], customHabits = [], totals, savingsGuidance } = summary;
+  const { profile, income, categories, ranking, recommendations, health, alerts, metals, streak, habits, transactions, debtObligations, emiReminders, goals = [], savingsTargets = [], customHabits = [], totals, savingsGuidance, analytics } = summary;
+  const dashboardCategories = useMemo(() => {
+    const goalCategories = goals.map((goal) => {
+      const accent = goalAccent(goal);
+      const target = Number(goal.target || 0);
+      const current = Number(goal.current || 0);
+      const remaining = Math.max(0, target - current);
+      return {
+        id: `goal-category-${goal.id}`,
+        type: goalCategoryType(goal.id),
+        label: goal.name,
+        priority: "Goal",
+        monthlyLimit: target,
+        spent: current,
+        expected: current,
+        remaining,
+        progress: target > 0 ? Math.min(100, Math.round((current / target) * 100)) : 0,
+        status: current >= target ? "green" : remaining <= target * 0.25 ? "orange" : "green",
+        color: accent.color,
+      };
+    });
+    return [...categories, ...goalCategories];
+  }, [categories, goals]);
   const chartData = useMemo(() => categories.map((category) => ({
     name: category.label.replace(" / ", " "),
     Actual: category.spent,
@@ -920,19 +1340,193 @@ const Dashboard = memo(function Dashboard({ user, summary, activeTab, isTabPendi
     Limit: category.monthlyLimit,
     type: category.type,
   })), [categories]);
-  const pieData = useMemo(() => categories.map((category) => ({
+  const pieData = useMemo(() => dashboardCategories.map((category) => ({
     name: category.label,
     value: category.monthlyLimit,
     spent: category.spent,
     type: category.type,
+    color: category.color || categoryColors[category.type],
     percent: income.monthlyIncome ? (category.monthlyLimit / income.monthlyIncome) * 100 : 0,
-  })), [categories, income.monthlyIncome]);
+  })), [dashboardCategories, income.monthlyIncome]);
   const activeLabel = navItems.find(([key]) => key === activeTab)?.[2] || "Overview";
+  const [overlayMessagesByPage, setOverlayMessagesByPage] = useState({});
+  const [overlayDraft, setOverlayDraft] = useState("");
+  const [overlayError, setOverlayError] = useState("");
+  const [overlayLoading, setOverlayLoading] = useState(false);
+  const [assistantSourcePage, setAssistantSourcePage] = useState("dashboard");
+  const [assistantOverlayOpen, setAssistantOverlayOpen] = useState(false);
+  const [assistantConversations, setAssistantConversations] = useState([]);
+  const [assistantConversationId, setAssistantConversationId] = useState("");
+  const [assistantPageMessages, setAssistantPageMessages] = useState([]);
+  const [assistantPageDraft, setAssistantPageDraft] = useState("");
+  const [assistantPageError, setAssistantPageError] = useState("");
+  const [assistantPageLoading, setAssistantPageLoading] = useState(false);
+  const [assistantIsStartingNew, setAssistantIsStartingNew] = useState(false);
+
+  const overlayMessages = overlayMessagesByPage[assistantSourcePage] || [];
+  const activeConversation = useMemo(
+    () => assistantConversations.find((conversation) => conversation.id === assistantConversationId) || null,
+    [assistantConversationId, assistantConversations],
+  );
+
+  useEffect(() => {
+    if (activeTab !== "assistant") setAssistantSourcePage(activeTab);
+  }, [activeTab]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadAssistantConversations() {
+      try {
+        const result = await api("/api/assistant/conversations");
+        if (cancelled) return;
+        const conversations = result.conversations || [];
+        setAssistantConversations(conversations);
+        if (!assistantConversationId && !assistantIsStartingNew && conversations[0]) {
+          setAssistantConversationId(conversations[0].id);
+          setAssistantPageMessages(conversations[0].messages || []);
+        }
+      } catch {
+        if (!cancelled) setAssistantConversations([]);
+      }
+    }
+
+    loadAssistantConversations();
+    return () => {
+      cancelled = true;
+    };
+  }, [assistantConversationId, assistantIsStartingNew]);
+
+  async function persistAssistantConversation(messages) {
+    const title = assistantConversationTitle(messages.find((message) => message.role === "user")?.content || "New Chat");
+    if (!assistantConversationId) {
+      const result = await api("/api/assistant/conversations", {
+        method: "POST",
+        body: JSON.stringify({
+          title,
+          sourcePage: "assistant",
+          messages,
+        }),
+      });
+      const conversation = result.conversation;
+      setAssistantConversationId(conversation.id);
+      setAssistantIsStartingNew(false);
+      setAssistantConversations((current) => [conversation, ...current]);
+      return conversation;
+    }
+
+    const result = await api("/api/assistant/conversations", {
+      method: "PATCH",
+      body: JSON.stringify({
+        id: assistantConversationId,
+        title,
+        sourcePage: "assistant",
+        messages,
+      }),
+    });
+    const conversation = result.conversation;
+    setAssistantIsStartingNew(false);
+    setAssistantConversations((current) => [conversation, ...current.filter((item) => item.id !== conversation.id)]);
+    return conversation;
+  }
+
+  async function sendOverlayMessage(text) {
+    const content = text.trim();
+    if (!content || overlayLoading) return;
+    const nextMessages = [...overlayMessages, assistantMessage("user", content)];
+    setOverlayMessagesByPage((current) => ({ ...current, [assistantSourcePage]: nextMessages }));
+    setOverlayDraft("");
+    setOverlayError("");
+    setOverlayLoading(true);
+    try {
+      const result = await api("/api/assistant/chat", {
+        method: "POST",
+        body: JSON.stringify({
+          page: assistantSourcePage || "dashboard",
+          messages: nextMessages,
+        }),
+      });
+      setOverlayMessagesByPage((current) => ({
+        ...current,
+        [assistantSourcePage]: [...(current[assistantSourcePage] || nextMessages), assistantMessage("assistant", result.reply, result.modelUsed)],
+      }));
+    } catch (error) {
+      setOverlayError(error.message);
+    } finally {
+      setOverlayLoading(false);
+    }
+  }
+
+  async function sendAssistantPageMessage(text) {
+    const content = text.trim();
+    if (!content || assistantPageLoading) return;
+    const nextMessages = [...assistantPageMessages, assistantMessage("user", content)];
+    setAssistantPageMessages(nextMessages);
+    setAssistantPageDraft("");
+    setAssistantPageError("");
+    setAssistantPageLoading(true);
+    try {
+      const result = await api("/api/assistant/chat", {
+        method: "POST",
+        body: JSON.stringify({
+          page: "assistant",
+          messages: nextMessages,
+        }),
+      });
+      const finalMessages = [...nextMessages, assistantMessage("assistant", result.reply, result.modelUsed)];
+      setAssistantPageMessages(finalMessages);
+      await persistAssistantConversation(finalMessages);
+    } catch (error) {
+      setAssistantPageError(error.message);
+    } finally {
+      setAssistantPageLoading(false);
+    }
+  }
+
+  function openAssistant() {
+    setOverlayError("");
+    setAssistantOverlayOpen(true);
+  }
+
+  function closeAssistantOverlay() {
+    setAssistantOverlayOpen(false);
+  }
+
+  function selectAssistantConversation(conversation) {
+    setAssistantConversationId(conversation.id);
+    setAssistantIsStartingNew(false);
+    setAssistantPageMessages(conversation.messages || []);
+    setAssistantPageError("");
+  }
+
+  function startNewAssistantConversation() {
+    setAssistantIsStartingNew(true);
+    setAssistantConversationId("");
+    setAssistantPageMessages([]);
+    setAssistantPageDraft("");
+    setAssistantPageError("");
+  }
 
   if (activeTab === "overview") {
     return (
       <div className={`standalone-overview tab-panel ${isTabPending ? "pending" : ""}`}>
         <OverviewPage profile={profile} income={income} health={health} alerts={alerts} recommendations={recommendations} goals={goals} savingsGuidance={savingsGuidance} onTab={onTab} />
+        <button className="assistant-fab" type="button" onClick={openAssistant}>
+          <Sparkles size={18} />
+          <span>Chat with AI Assistant</span>
+        </button>
+        {assistantOverlayOpen && (
+          <AssistantOverlay
+            messages={overlayMessages}
+            draft={overlayDraft}
+            error={overlayError}
+            loading={overlayLoading}
+            pageContext={assistantSourcePage}
+            onDraftChange={setOverlayDraft}
+            onSubmit={sendOverlayMessage}
+            onClose={closeAssistantOverlay}
+          />
+        )}
       </div>
     );
   }
@@ -959,7 +1553,7 @@ const Dashboard = memo(function Dashboard({ user, summary, activeTab, isTabPendi
       <section className="workspace">
         <header className="workspace-topbar">
           <button className="btn secondary icon sidebar-menu" type="button" title="Menu"><Menu size={18} /></button>
-          <div>
+          <div className="workspace-title-block">
             <h1>{activeLabel}</h1>
             <p className="hint">{profile.name}'s financial workspace</p>
           </div>
@@ -970,38 +1564,96 @@ const Dashboard = memo(function Dashboard({ user, summary, activeTab, isTabPendi
           </div>
         </header>
         <div className={`tab-panel ${isTabPending ? "pending" : ""}`}>
-          {activeTab === "dashboard" && <DashboardPage categories={categories} chartData={chartData} pieData={pieData} health={health} />}
+          {activeTab === "dashboard" && <DashboardPage categories={dashboardCategories} chartData={chartData} pieData={pieData} health={health} />}
           {activeTab === "budget" && <BudgetPage income={income} categories={categories} hasDebt={profile.hasDebt} savingsGuidance={savingsGuidance} recommendations={recommendations} onDone={onDone} />}
-          {activeTab === "transactions" && <TransactionsPage transactions={transactions || []} categories={categories} emiReminders={emiReminders || []} totals={totals} onDone={onDone} />}
-          {activeTab === "goals" && <GoalsPage goals={goals} recommendations={recommendations} onDone={onDone} />}
-          {activeTab === "habits" && <HabitsPage customHabits={customHabits} habits={habits} categories={categories} onDone={onDone} />}
-          {activeTab === "savings" && <SavingsPage savingsTargets={savingsTargets} savingsGuidance={savingsGuidance} income={income} onDone={onDone} />}
-          {activeTab === "analytics" && <AnalyticsPage categories={categories} transactions={transactions || []} health={health} income={income} savingsGuidance={savingsGuidance} goals={goals} />}
-          {activeTab === "investments" && <InvestmentsPage metals={metals} />}
+          {activeTab === "transactions" && <TransactionsPage transactions={transactions || []} categories={categories} goals={goals} emiReminders={emiReminders || []} totals={totals} income={income} onDone={onDone} />}
+          {activeTab === "goals" && <GoalsPage goals={goals} onDone={onDone} />}
+          {activeTab === "habits" && <HabitsPage customHabits={customHabits} habits={habits} categories={categories} goals={goals} savingsTargets={savingsTargets} transactions={transactions} income={income} onDone={onDone} />}
+          {activeTab === "savings" && <SavingsPage savingsTargets={savingsTargets} savingsGuidance={savingsGuidance} income={income} goals={goals} transactions={transactions || []} onDone={onDone} />}
+          {activeTab === "analytics" && <AnalyticsPage categories={categories} transactions={transactions || []} health={health} income={income} savingsGuidance={savingsGuidance} goals={goals} analytics={analytics} />}
+          {activeTab === "investments" && <InvestmentsPage />}
+          {activeTab === "assistant" && (
+            <AssistantPage
+              conversations={assistantConversations}
+              conversation={activeConversation}
+              messages={assistantPageMessages}
+              draft={assistantPageDraft}
+              error={assistantPageError}
+              loading={assistantPageLoading}
+              onDraftChange={setAssistantPageDraft}
+              onSubmit={sendAssistantPageMessage}
+              onSelectConversation={selectAssistantConversation}
+              onNewConversation={startNewAssistantConversation}
+            />
+          )}
           {activeTab === "settings" && <SettingsPage user={user} profile={profile} income={income} onDone={onDone} />}
         </div>
+        {activeTab !== "assistant" && (
+          <button className="assistant-fab" type="button" onClick={openAssistant}>
+            <Sparkles size={18} />
+            <span>Chat with AI Assistant</span>
+          </button>
+        )}
+        {assistantOverlayOpen && (
+          <AssistantOverlay
+            messages={overlayMessages}
+            draft={overlayDraft}
+            error={overlayError}
+            loading={overlayLoading}
+            pageContext={assistantSourcePage}
+            onDraftChange={setOverlayDraft}
+            onSubmit={sendOverlayMessage}
+            onClose={closeAssistantOverlay}
+          />
+        )}
       </section>
     </div>
   );
 });
 
-const TransactionsPage = memo(function TransactionsPage({ transactions, categories, emiReminders, totals, onDone }) {
+const TransactionsPage = memo(function TransactionsPage({ transactions, categories, goals = [], emiReminders, totals, income, onDone }) {
+  const indiaToday = useMemo(() => {
+    const parts = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Kolkata", year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(new Date());
+    const year = parts.find((part) => part.type === "year")?.value;
+    const month = parts.find((part) => part.type === "month")?.value;
+    const day = parts.find((part) => part.type === "day")?.value;
+    return `${year}-${month}-${day}`;
+  }, []);
   const [selectedDate, setSelectedDate] = useState("");
+  const [visibleMonth, setVisibleMonth] = useState(() => monthKeyFromDate(new Date(`${indiaToday}T12:00:00+05:30`)));
   const visible = selectedDate ? transactions.filter((transaction) => transaction.date === selectedDate) : transactions;
-  const totalCredits = totals?.totalCredits || transactions.filter((t) => t.categoryType === "credit").reduce((sum, t) => sum + Number(t.amount || 0), 0);
-  const totalExpenses = totals?.totalExpenses || transactions.filter((t) => t.categoryType !== "credit").reduce((sum, t) => sum + Number(t.amount || 0), 0);
-  const netBalance = totals?.netBalance || totalCredits - totalExpenses;
+  const monthTransactions = useMemo(
+    () => transactions.filter((transaction) => String(transaction.date || "").slice(0, 7) === visibleMonth),
+    [transactions, visibleMonth],
+  );
+  const monthCredits = monthTransactions.filter((transaction) => transaction.categoryType === "credit").reduce((sum, transaction) => sum + Number(transaction.amount || 0), 0);
+  const totalExpenses = monthTransactions.filter((transaction) => transaction.categoryType !== "credit").reduce((sum, transaction) => sum + Number(transaction.amount || 0), 0);
+  const baseIncome = Number(income?.monthlyIncome || 0);
+  const totalIncome = baseIncome + monthCredits;
+  const netBalance = totalIncome - totalExpenses;
+  const activeMonthLabel = monthLabelFromKey(visibleMonth) || "this month";
 
   return (
     <div className="dashboard-page">
       <section className="transactions-top">
-        <HabitCalendar habits={[]} transactions={transactions} emiReminders={emiReminders} selectedDate={selectedDate || new Date().toISOString().slice(0, 10)} onSelectDate={setSelectedDate} />
-        <TransactionForm categories={categories} selectedDate={selectedDate} onDone={onDone} />
+        <HabitCalendar
+          habits={[]}
+          transactions={transactions}
+          emiReminders={emiReminders}
+          selectedDate={selectedDate || indiaToday}
+          visibleMonth={visibleMonth}
+          onSelectDate={(date) => {
+            setSelectedDate(date);
+            if (date) setVisibleMonth(String(date).slice(0, 7));
+          }}
+          onVisibleMonthChange={setVisibleMonth}
+        />
+        <TransactionForm categories={categories} goals={goals} selectedDate={selectedDate} onDone={onDone} />
       </section>
       <section className="summary-grid three">
-        <Metric icon={<TrendingUp size={19} />} label="Total Income" value={formatMoney(totalCredits)} />
-        <Metric icon={<TrendingDown size={19} />} label="Total Expenses" value={formatMoney(totalExpenses)} />
-        <Metric icon={<Activity size={19} />} label="Net Balance" value={formatMoney(netBalance)} />
+        <Metric icon={<TrendingUp size={19} />} label="Total Income" value={formatMoney(totalIncome)} hint={activeMonthLabel} valueClassName="transaction-income-value" />
+        <Metric icon={<TrendingDown size={19} />} label="Total Expenses" value={formatMoney(totalExpenses)} hint={activeMonthLabel} valueClassName="transaction-expense-value" />
+        <Metric icon={<Activity size={19} />} label="Net Balance" value={formatMoney(netBalance)} hint={activeMonthLabel} valueClassName="transaction-balance-value" />
       </section>
       <section className="panel section">
         <div className="section-heading">
@@ -1009,23 +1661,64 @@ const TransactionsPage = memo(function TransactionsPage({ transactions, categori
           {selectedDate && <button className="btn secondary" type="button" onClick={() => setSelectedDate("")}>Show all</button>}
         </div>
         <div className="transaction-edit-list">
-          {visible.length ? visible.map((transaction) => <EditableTransaction key={transaction.id} transaction={transaction} categories={categories} onDone={onDone} />) : <div className="empty-state">No transactions found.</div>}
+          {visible.length ? visible.map((transaction) => <EditableTransaction key={transaction.id} transaction={transaction} categories={categories} goals={goals} onDone={onDone} />) : <div className="empty-state">No transactions found.</div>}
         </div>
       </section>
     </div>
   );
 });
 
-const GoalsPage = memo(function GoalsPage({ goals, recommendations, onDone }) {
+const GoalsPage = memo(function GoalsPage({ goals, onDone }) {
   const [form, setForm] = useState({ name: "", emoji: "💰", target: "", current: "0", deadline: "", priority: "medium" });
   const [error, setError] = useState("");
+  const [composerOpen, setComposerOpen] = useState(false);
+  const [aiInsights, setAiInsights] = useState([]);
+  const [insightsLoading, setInsightsLoading] = useState(false);
+  const [insightsError, setInsightsError] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function fetchInsights() {
+      setInsightsLoading(true);
+      setInsightsError("");
+      try {
+        const result = await api("/api/assistant/insights", {
+          method: "POST",
+          body: JSON.stringify({ page: "goals" }),
+        });
+        if (!cancelled) setAiInsights(result.insights || []);
+      } catch (err) {
+        if (!cancelled) {
+          setAiInsights([]);
+          setInsightsError(err.message);
+        }
+      } finally {
+        if (!cancelled) setInsightsLoading(false);
+      }
+    }
+
+    fetchInsights();
+    return () => {
+      cancelled = true;
+    };
+  }, [goals]);
 
   async function addGoal(event) {
     event.preventDefault();
     setError("");
     try {
-      await api("/api/goals", { method: "POST", body: JSON.stringify({ ...form, target: Number(form.target), current: Number(form.current) }) });
+      await api("/api/goals", {
+        method: "POST",
+        body: JSON.stringify({
+          ...form,
+          target: parseMoneyInput(form.target),
+          current: parseMoneyInput(form.current),
+          deadline: normalizeDisplayDateInput(form.deadline),
+        }),
+      });
       setForm({ name: "", emoji: "💰", target: "", current: "0", deadline: "", priority: "medium" });
+      setComposerOpen(false);
       await onDone();
     } catch (err) {
       setError(err.message);
@@ -1033,25 +1726,38 @@ const GoalsPage = memo(function GoalsPage({ goals, recommendations, onDone }) {
   }
 
   return (
-    <div className="dashboard-page">
-      <section className="panel section">
-        <div className="section-heading"><div><h2>Financial Goals</h2><p className="hint">Track your progress toward important money targets.</p></div></div>
-        <form className="goal-form" onSubmit={addGoal}>
-          <input placeholder="Goal" value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} required />
-          <div className="goal-emoji-field">
-            <input placeholder="Icon" value={form.emoji} onChange={(event) => setForm({ ...form, emoji: event.target.value })} required />
-            <EmojiPicker value={form.emoji} onChange={(emoji) => setForm({ ...form, emoji })} />
+    <div className="dashboard-page goals-page">
+      <section className="panel section goals-header-panel">
+        <div className="section-heading goals-heading">
+          <div>
+            <h2>Financial Goals</h2>
+            <p className="hint">Track your progress toward important money targets.</p>
           </div>
-          <input type="number" min="1" placeholder="Target Amount" value={form.target} onChange={(event) => setForm({ ...form, target: event.target.value })} required />
-          <input type="date" value={form.deadline} onChange={(event) => setForm({ ...form, deadline: event.target.value })} required />
-          <button className="btn" type="submit"><Plus size={17} />Add Goal</button>
-        </form>
+          <button className="btn" type="button" onClick={() => setComposerOpen((current) => !current)}>
+            <Plus size={17} />
+            {composerOpen ? "Close" : "Add Goal"}
+          </button>
+        </div>
+        {composerOpen && (
+          <form className="goal-composer" onSubmit={addGoal}>
+            <div className="goal-composer-grid">
+              <input placeholder="Goal" value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} required />
+              <button type="button" className="goal-emoji-trigger" aria-label="Selected emoji">
+                <span>{form.emoji}</span>
+              </button>
+              <input placeholder="Target Amount" value={formatMoneyInput(form.target)} inputMode="decimal" onChange={(event) => setForm({ ...form, target: formatMoneyInput(event.target.value) })} required />
+              <input value={formatDisplayDateInput(form.deadline)} onChange={(event) => setForm({ ...form, deadline: formatDateTyping(event.target.value) })} placeholder="DD/MM/YYYY" inputMode="numeric" required />
+              <button className="btn goal-submit" type="submit"><Plus size={17} />Add Goal</button>
+            </div>
+            <EmojiPicker value={form.emoji} onChange={(emoji) => setForm({ ...form, emoji })} />
+          </form>
+        )}
         {error && <div className="alert risk">{error}</div>}
       </section>
-      <section className="goal-grid">
+      <section className={`goal-grid ${goals.length === 1 ? "single-goal" : ""}`}>
         {goals.map((goal) => <GoalCard key={goal.id} goal={goal} onDone={onDone} />)}
       </section>
-      <RecommendationsPanel recommendations={recommendations.slice(0, 3)} />
+      <AIInsightsPanel insights={aiInsights} loading={insightsLoading} error={insightsError} />
     </div>
   );
 });
@@ -1077,64 +1783,405 @@ function EmojiPicker({ value, onChange }) {
 function GoalCard({ goal, onDone }) {
   const progress = goal.target > 0 ? Math.min(100, Math.round((goal.current / goal.target) * 100)) : 0;
   const daysLeft = Math.max(0, Math.ceil((new Date(`${goal.deadline}T12:00:00`) - new Date()) / 86400000));
+  const amountLeft = Math.max(0, Number(goal.target || 0) - Number(goal.current || 0));
+  const accent = goalAccent(goal);
   async function remove() {
     await api("/api/goals", { method: "DELETE", body: JSON.stringify({ id: goal.id }) });
     await onDone();
   }
   return (
     <article className="panel section goal-card">
-      <div className="section-heading"><div className="goal-title"><span>{goal.emoji}</span><div><h2>{goal.name}</h2><p className="hint">{daysLeft} days left</p></div></div><button className="btn secondary icon danger" onClick={remove} title="Delete goal"><Trash2 size={16} /></button></div>
-      <div className="bar large"><span style={{ width: `${progress}%`, background: "#8B5CF6" }} /></div>
-      <div className="money-row"><span>{formatMoney(goal.current)} saved</span><span>{formatMoney(goal.target)} target</span><span>{progress}%</span></div>
+      <div className="section-heading goal-card-heading">
+        <div className="goal-title">
+          <span>{goal.emoji}</span>
+          <div>
+            <h2>{goal.name}</h2>
+            <span className={`goal-priority ${accent.badge}`}>{String(goal.priority || "medium").toUpperCase()}</span>
+          </div>
+        </div>
+        <button className="btn secondary icon danger" onClick={remove} title="Delete goal"><Trash2 size={16} /></button>
+      </div>
+      <div className="goal-progress-head">
+        <span>Progress</span>
+        <strong style={{ color: accent.color }}>{progress}%</strong>
+      </div>
+      <div className="bar large goal-progress-bar">
+        <span style={{ width: `${progress}%`, background: accent.color, boxShadow: "none" }} />
+      </div>
+      <div className="goal-amount-grid">
+        <div>
+          <span className="hint">Current</span>
+          <strong>{formatMoney(goal.current)}</strong>
+        </div>
+        <div>
+          <span className="hint">Target</span>
+          <strong>{formatMoney(goal.target)}</strong>
+        </div>
+      </div>
+      <div className="goal-footer-row">
+        <span className="hint">{daysLeft} days left</span>
+        <strong style={{ color: accent.color }}>{formatMoney(amountLeft)} to go</strong>
+      </div>
     </article>
   );
 }
 
-const HabitsPage = memo(function HabitsPage({ customHabits, habits, categories, onDone }) {
-  const [form, setForm] = useState({ name: "", description: "", icon: "*", targetDays: 30 });
+const HabitsPage = memo(function HabitsPage({ customHabits, habits, categories, goals = [], savingsTargets = [], transactions = [], income, onDone }) {
+  const [form, setForm] = useState({ name: "", description: "", icon: "*", cadence: "daily", targetDays: 30 });
+  const [showComposer, setShowComposer] = useState(false);
   const completedToday = customHabits.filter((habit) => habit.completedToday).length;
   const totalStreak = customHabits.reduce((sum, habit) => sum + Number(habit.streak || 0), 0);
+  const bestStreak = customHabits.reduce((best, habit) => Math.max(best, Number(habit.bestStreak || habit.streak || 0)), 0);
+  const completionRate = customHabits.length ? Math.round((completedToday / customHabits.length) * 100) : 0;
+  const weeklyHabits = customHabits.filter((habit) => habit.cadence === "weekly");
+  const monthlySavingsTarget = Number(savingsTargets[0]?.monthlyContribution || income?.monthlyIncome * 0.2 || 0);
+  const monthKey = useMemo(() => {
+    const now = new Date();
+    const parts = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Kolkata", year: "numeric", month: "2-digit" }).formatToParts(now);
+    const year = parts.find((part) => part.type === "year")?.value || String(now.getFullYear());
+    const month = parts.find((part) => part.type === "month")?.value || String(now.getMonth() + 1).padStart(2, "0");
+    return `${year}-${month}`;
+  }, []);
+  const savingsThisMonth = useMemo(() => transactions
+    .filter((transaction) => transaction.date?.startsWith(monthKey))
+    .filter((transaction) => transaction.categoryType === "savings" || transaction.goalId || isGoalCategoryType(transaction.categoryType))
+    .reduce((sum, transaction) => sum + Number(transaction.amount || 0), 0), [monthKey, transactions]);
+  const goalContributionCount = useMemo(() => transactions
+    .filter((transaction) => transaction.date?.startsWith(monthKey))
+    .filter((transaction) => transaction.goalId || isGoalCategoryType(transaction.categoryType)).length, [monthKey, transactions]);
+  const overBudgetCount = categories.filter((category) => category.status === "red").length;
+  const activeGoals = goals.filter((goal) => Number(goal.target || 0) > Number(goal.current || 0));
+
+  const dailyFocus = useMemo(() => {
+    const urgentGoal = activeGoals
+      .map((goal) => {
+        const deadline = goal.deadline ? new Date(`${goal.deadline}T12:00:00`) : null;
+        const daysLeft = deadline ? Math.max(0, Math.ceil((deadline.getTime() - Date.now()) / 86400000)) : null;
+        const amountLeft = Math.max(0, Number(goal.target || 0) - Number(goal.current || 0));
+        return { goal, daysLeft, amountLeft };
+      })
+      .filter((item) => item.daysLeft !== null)
+      .sort((a, b) => a.daysLeft - b.daysLeft)[0];
+    const lifestyleRisk = categories.find((category) => category.type === "lifestyle" && ["orange", "red"].includes(category.status));
+    if (urgentGoal && urgentGoal.daysLeft <= 30) {
+      return {
+        title: `Prioritize ${urgentGoal.goal.name}`,
+        summary: `${formatMoney(urgentGoal.amountLeft)} still left with ${urgentGoal.daysLeft} day${urgentGoal.daysLeft === 1 ? "" : "s"} remaining.`,
+        chip: `${Math.max(urgentGoal.daysLeft, 0)} days left`,
+        tone: "green",
+      };
+    }
+    if (monthlySavingsTarget > 0 && savingsThisMonth < monthlySavingsTarget) {
+      return {
+        title: "Protect this month's savings pace",
+        summary: `${formatMoney(Math.max(0, monthlySavingsTarget - savingsThisMonth))} still needed to hit your monthly savings target.`,
+        chip: `${formatMoney(savingsThisMonth)} saved`,
+        tone: "purple",
+      };
+    }
+    if (lifestyleRisk) {
+      return {
+        title: "Tighten discretionary spending",
+        summary: `${lifestyleRisk.label} is drifting off plan. Logging impulse purchases today will help contain the month.`,
+        chip: lifestyleRisk.status === "red" ? "Over budget" : "Watch closely",
+        tone: "orange",
+      };
+    }
+    if (customHabits.some((habit) => !habit.completedToday)) {
+      return {
+        title: "Finish your habit set",
+        summary: `${customHabits.length - completedToday} habit${customHabits.length - completedToday === 1 ? "" : "s"} still open today. Closing them keeps the streak intact.`,
+        chip: `${completedToday}/${customHabits.length} done`,
+        tone: "blue",
+      };
+    }
+    return {
+      title: "Momentum looks clean",
+      summary: "Your current budget, savings, and goal signals are stable. Use today to keep the routine consistent.",
+      chip: "On track",
+      tone: "green",
+    };
+  }, [activeGoals, categories, completedToday, customHabits, monthlySavingsTarget, savingsThisMonth]);
+
+  const templateHabits = useMemo(() => {
+    const templates = [
+      { key: "log-spend", icon: "📊", name: "Daily budget tracking", description: "Review and log every spend before the day closes.", cadence: "daily", targetDays: 30 },
+      { key: "save-first", icon: "💰", name: "Save before spending", description: "Move money into savings or a goal before discretionary purchases.", cadence: "daily", targetDays: 20 },
+      { key: "weekly-review", icon: "🛡️", name: "Weekly budget review", description: "Review category drift and adjust your next few days.", cadence: "weekly", targetDays: 12 },
+    ];
+    if (overBudgetCount > 0) {
+      templates[0] = { key: "impulse-check", icon: "🛑", name: "No impulse purchases", description: "Pause any unplanned purchase until you re-check the category limit.", cadence: "daily", targetDays: 21 };
+    }
+    if (activeGoals.length) {
+      templates[1] = { key: "goal-transfer", icon: activeGoals[0].emoji || "🎯", name: `Fund ${activeGoals[0].name}`, description: `Add a small transfer toward ${activeGoals[0].name} on every savings day.`, cadence: "daily", targetDays: 18 };
+    }
+    return templates.filter((template) => !customHabits.some((habit) => habit.name.toLowerCase() === template.name.toLowerCase()));
+  }, [activeGoals, customHabits, overBudgetCount]);
+
+  const achievements = useMemo(() => {
+    const budgetGreen = categories.length > 0 && categories.every((category) => category.status !== "red");
+    const topGoal = goals.reduce((best, goal) => {
+      const currentRatio = Number(goal.target || 0) > 0 ? Number(goal.current || 0) / Number(goal.target || 1) : 0;
+      const bestRatio = Number(best?.target || 0) > 0 ? Number(best.current || 0) / Number(best.target || 1) : -1;
+      return currentRatio > bestRatio ? goal : best;
+    }, null);
+    return [
+      {
+        key: "streak7",
+        icon: "🌱",
+        title: "Budget Beginner",
+        detail: "Any habit reaches a 7-day streak",
+        unlocked: bestStreak >= 7,
+        accent: "green",
+      },
+      {
+        key: "savingstar",
+        icon: "⭐",
+        title: "Saving Star",
+        detail: monthlySavingsTarget > 0 ? `Save at least ${formatMoney(Math.round(monthlySavingsTarget * 0.75))} this month` : "Set a monthly savings target",
+        unlocked: monthlySavingsTarget > 0 && savingsThisMonth >= monthlySavingsTarget * 0.75,
+        accent: "purple",
+      },
+      {
+        key: "goalgetter",
+        icon: "🎯",
+        title: "Goal Getter",
+        detail: topGoal ? `Push ${topGoal.name} past the early progress line` : "Start funding one savings goal",
+        unlocked: goals.some((goal) => Number(goal.target || 0) > 0 && Number(goal.current || 0) / Number(goal.target || 1) >= 0.25),
+        accent: "orange",
+      },
+      {
+        key: "smartspender",
+        icon: "🧠",
+        title: "Smart Spender",
+        detail: "Keep all tracked categories out of the red zone",
+        unlocked: budgetGreen,
+        accent: "blue",
+      },
+      {
+        key: "transfermode",
+        icon: "💸",
+        title: "Transfer Mode",
+        detail: "Record at least 3 savings or goal contributions this month",
+        unlocked: goalContributionCount >= 3,
+        accent: "green",
+      },
+      {
+        key: "consistency",
+        icon: "🏆",
+        title: "Consistency Mode",
+        detail: weeklyHabits.length ? "Hit every weekly cadence habit this week" : "Complete at least 75% of your active habits today",
+        unlocked: weeklyHabits.length ? weeklyHabits.every((habit) => Number(habit.thisWeekCompletions || 0) > 0) : (customHabits.length > 0 && completionRate >= 75),
+        accent: "purple",
+      },
+    ];
+  }, [bestStreak, completionRate, customHabits.length, categories, goalContributionCount, goals, monthlySavingsTarget, savingsThisMonth, weeklyHabits]);
+  const unlockedAchievements = achievements.filter((achievement) => achievement.unlocked).length;
 
   async function addHabit(event) {
     event.preventDefault();
     await api("/api/custom-habits", { method: "POST", body: JSON.stringify(form) });
-    setForm({ name: "", description: "", icon: "*", targetDays: 30 });
+    setForm({ name: "", description: "", icon: "*", cadence: "daily", targetDays: 30 });
+    setShowComposer(false);
+    await onDone();
+  }
+
+  async function addTemplateHabit(template) {
+    await api("/api/custom-habits", { method: "POST", body: JSON.stringify(template) });
     await onDone();
   }
 
   async function toggle(habit) {
-    await api("/api/custom-habits", { method: "PATCH", body: JSON.stringify({ ...habit, completedToday: !habit.completedToday, streak: habit.completedToday ? Math.max(0, habit.streak - 1) : habit.streak + 1 }) });
+    await api("/api/custom-habits", { method: "PATCH", body: JSON.stringify({ ...habit, completedToday: !habit.completedToday }) });
+    await onDone();
+  }
+
+  async function removeHabit(id) {
+    await api("/api/custom-habits", { method: "DELETE", body: JSON.stringify({ id }) });
     await onDone();
   }
 
   return (
-    <div className="dashboard-page">
-      <section className="summary-grid three">
-        <Metric icon={<FlameIcon />} label="Total Streak" value={`${totalStreak} days`} />
-        <Metric icon={<Check size={19} />} label="Completed Today" value={`${completedToday}/${customHabits.length || 0}`} />
-        <Metric icon={<Medal size={19} />} label="Achievements" value={`${habits.length} logs`} />
+    <div className="dashboard-page habits-workspace">
+      <section className="summary-grid three habits-summary-grid">
+        <div className="panel metric habit-metric gradient-orange">
+          <div className="row-title"><FlameIcon /><span>Total Streak</span></div>
+          <div className="metric-value">{totalStreak}</div>
+          <p>{bestStreak ? `Best streak ${bestStreak} days` : "Start your first streak"}</p>
+        </div>
+        <div className="panel metric habit-metric gradient-purple">
+          <div className="row-title"><Check size={19} /><span>Completed Today</span></div>
+          <div className="metric-value">{customHabits.length ? `${completedToday}/${customHabits.length}` : "0/0"}</div>
+          <p>{customHabits.length ? `${completionRate}% completion rate` : "Add a habit to begin tracking"}</p>
+        </div>
+        <div className="panel metric habit-metric gradient-green">
+          <div className="row-title"><Medal size={19} /><span>Achievements</span></div>
+          <div className="metric-value">{`${unlockedAchievements}/${achievements.length}`}</div>
+          <p>{goalContributionCount} goal-linked savings logs this month</p>
+        </div>
       </section>
-      <section className="panel section">
-        <h2>Today's Habits</h2>
-        <form className="goal-form" onSubmit={addHabit}>
-          <input placeholder="Habit" value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} required />
-          <input placeholder="Description" value={form.description} onChange={(event) => setForm({ ...form, description: event.target.value })} />
-          <input placeholder="Icon" value={form.icon} onChange={(event) => setForm({ ...form, icon: event.target.value })} />
-          <input type="number" min="1" max="365" value={form.targetDays} onChange={(event) => setForm({ ...form, targetDays: Number(event.target.value) })} />
-          <button className="btn" type="submit"><Plus size={17} />Add Habit</button>
-        </form>
-        <div className="habits editable">
-          {(customHabits.length ? customHabits : []).map((habit) => (
-            <div className={`habit-row achievement ${habit.completedToday ? "earned" : ""}`} key={habit.id}>
-              <span className="achievement-icon">{habit.icon}</span>
-              <div><strong>{habit.name}</strong><p className="hint">{habit.description}</p></div>
-              <span className="badge green">{habit.streak}/{habit.targetDays}</span>
-              <button className="btn secondary icon" onClick={() => toggle(habit)} title="Toggle habit">{habit.completedToday ? <Check size={16} /> : <X size={16} />}</button>
+
+      <section className="habits-top-grid">
+        <article className={`panel section habits-focus-card ${dailyFocus.tone}`}>
+          <div className="section-header">
+            <div>
+              <span className="eyebrow">Smart focus</span>
+              <h2>{dailyFocus.title}</h2>
             </div>
+            <span className={`badge ${dailyFocus.tone}`}>{dailyFocus.chip}</span>
+          </div>
+          <p className="hint">{dailyFocus.summary}</p>
+          <div className="habits-focus-stats">
+            <div>
+              <span className="hint">Monthly savings pace</span>
+              <strong>{monthlySavingsTarget > 0 ? `${formatMoney(savingsThisMonth)} / ${formatMoney(monthlySavingsTarget)}` : "No target set"}</strong>
+            </div>
+            <div>
+              <span className="hint">Goal activity</span>
+              <strong>{goalContributionCount} contributions this month</strong>
+            </div>
+            <div>
+              <span className="hint">Budget pressure</span>
+              <strong>{overBudgetCount ? `${overBudgetCount} category${overBudgetCount === 1 ? "" : "ies"} over` : "Stable"}</strong>
+            </div>
+          </div>
+        </article>
+
+        <article className="panel section habits-templates-panel">
+          <div className="section-header">
+            <div>
+              <span className="eyebrow">Quick start</span>
+              <h2>Habit templates</h2>
+            </div>
+            <button className="btn secondary" type="button" onClick={() => setShowComposer((value) => !value)}>
+              <Plus size={16} />
+              {showComposer ? "Close" : "Add habit"}
+            </button>
+          </div>
+          <div className="habits-template-list">
+            {templateHabits.length ? templateHabits.slice(0, 3).map((template) => (
+              <div className="habit-template-card" key={template.key}>
+                <span className="habit-template-icon">{template.icon}</span>
+                <div>
+                  <strong>{template.name}</strong>
+                  <p className="hint">{template.description}</p>
+                </div>
+                <button className="btn secondary" type="button" onClick={() => addTemplateHabit(template)}>Use</button>
+              </div>
+            )) : (
+              <div className="habit-template-card empty">
+                <div>
+                  <strong>Your core templates are already active</strong>
+                  <p className="hint">Add a custom habit below if you want a more specific routine.</p>
+                </div>
+              </div>
+            )}
+          </div>
+          {showComposer && (
+            <form className="habits-composer" onSubmit={addHabit}>
+              <div className="habits-composer-grid">
+                <input placeholder="Habit name" value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} required />
+                <input placeholder="Icon" value={form.icon} onChange={(event) => setForm({ ...form, icon: event.target.value.slice(0, 4) })} />
+                <select value={form.cadence} onChange={(event) => setForm({ ...form, cadence: event.target.value })}>
+                  <option value="daily">Daily cadence</option>
+                  <option value="weekly">Weekly cadence</option>
+                </select>
+                <input type="number" min="1" max="365" value={form.targetDays} onChange={(event) => setForm({ ...form, targetDays: Number(event.target.value) })} />
+              </div>
+              <input placeholder="Describe the behavior you want to repeat" value={form.description} onChange={(event) => setForm({ ...form, description: event.target.value })} />
+              <button className="btn" type="submit"><Plus size={17} />Save habit</button>
+            </form>
+          )}
+        </article>
+      </section>
+
+      <section className="panel section habits-main-panel">
+        <div className="section-header">
+          <div>
+            <h2>Today's Habits</h2>
+            <p className="hint">Track the routines that actually move your budget, savings, and goals.</p>
+          </div>
+          <span className="badge green">{customHabits.length || 0} active</span>
+        </div>
+        <div className="habits-today-list">
+          {customHabits.length ? customHabits.map((habit) => {
+            const progress = habit.targetDays > 0 ? Math.min(100, Math.round((Number(habit.streak || 0) / Number(habit.targetDays || 1)) * 100)) : 0;
+            return (
+              <article className={`habit-card ${habit.completedToday ? "completed" : ""}`} key={habit.id}>
+                <div className="habit-card-main">
+                  <span className="habit-card-icon">{habit.icon}</span>
+                  <div className="habit-card-copy">
+                    <div className="habit-card-title-row">
+                      <div>
+                        <strong>{habit.name}</strong>
+                        <p className="hint">{habit.description || "Stay consistent with this financial behavior."}</p>
+                      </div>
+                      <div className="habit-card-actions">
+                        <button className={`habit-toggle ${habit.completedToday ? "done" : ""}`} type="button" onClick={() => toggle(habit)} aria-label={habit.completedToday ? "Mark as incomplete" : "Mark as complete"}>
+                          {habit.completedToday ? <Check size={18} /> : <X size={18} />}
+                        </button>
+                        <button className="habit-delete" type="button" onClick={() => removeHabit(habit.id)} aria-label="Delete habit">
+                          <Trash2 size={16} />
+                        </button>
+                      </div>
+                    </div>
+                    <div className="habit-card-meta">
+                      <span className={`badge ${habit.cadence === "weekly" ? "purple" : "blue"}`}>{habit.cadence === "weekly" ? "Weekly" : "Daily"}</span>
+                      <span><Zap size={14} /> {habit.streak} {habit.cadence === "weekly" ? "week" : "day"} streak</span>
+                      <span>Best {habit.bestStreak || habit.streak || 0} {habit.cadence === "weekly" ? "weeks" : "days"}</span>
+                      <span>Target {habit.targetDays} {habit.cadence === "weekly" ? "weeks" : "days"}</span>
+                    </div>
+                    <div className="habit-progress-row">
+                      <div className="habit-progress-track">
+                        <span style={{ width: `${progress}%` }} />
+                      </div>
+                      <strong>{progress}%</strong>
+                    </div>
+                    <div className="habit-card-foot">
+                      <span className="hint">
+                        {habit.cadence === "weekly"
+                          ? `${habit.thisWeekCompletions || 0} completions this week | ${habit.missedWindows || 0} missed weeks in the last 8`
+                          : `${habit.streak}/${habit.targetDays} days toward this cycle | ${habit.missedWindows || 0} missed days in the last 14`}
+                      </span>
+                      <strong>{habit.completedToday ? "Completed today" : (habit.lastCompletedAt ? `Last done ${formatShortIndiaDate(habit.lastCompletedAt)}` : "Still open today")}</strong>
+                    </div>
+                  </div>
+                </div>
+              </article>
+            );
+          }) : (
+            <div className="habit-empty-state">
+              <span className="habit-card-icon">✨</span>
+              <div>
+                <strong>No habits tracked yet</strong>
+                <p className="hint">Start with a template or add one routine you want to repeat each day or week.</p>
+              </div>
+            </div>
+          )}
+        </div>
+      </section>
+
+      <section className="panel section habits-achievements-panel">
+        <div className="section-header">
+          <div>
+            <h2>Achievements</h2>
+            <p className="hint">These unlock from your real budget, savings, goals, and habit activity.</p>
+          </div>
+          <span className="badge purple">{unlockedAchievements} unlocked</span>
+        </div>
+        <div className="habits-achievements-grid">
+          {achievements.map((achievement) => (
+            <article className={`habit-achievement-card ${achievement.unlocked ? `earned ${achievement.accent}` : ""}`} key={achievement.key}>
+              <span className="habit-achievement-icon">{achievement.icon}</span>
+              <div>
+                <strong>{achievement.title}</strong>
+                <p className="hint">{achievement.detail}</p>
+                <span className={`badge ${achievement.unlocked ? achievement.accent : "neutral"}`}>{achievement.unlocked ? "Unlocked" : "In progress"}</span>
+              </div>
+            </article>
           ))}
         </div>
       </section>
-      <HabitPanel categories={categories} />
     </div>
   );
 });
@@ -1143,26 +2190,116 @@ function FlameIcon() {
   return <Zap size={19} />;
 }
 
-const SavingsPage = memo(function SavingsPage({ savingsTargets, savingsGuidance, income, onDone }) {
-  const [form, setForm] = useState({ name: "", target: "", current: "0", monthlyContribution: savingsGuidance?.recommendedMonthlySavings || 0, deadline: "" });
+const SavingsPage = memo(function SavingsPage({ savingsTargets, savingsGuidance, income, goals = [], transactions = [], onDone }) {
+  const [form, setForm] = useState({ name: "", target: "", current: "0", monthlyContribution: String(savingsGuidance?.recommendedMonthlySavings || 0), deadline: "" });
+  const primarySavingsTarget = savingsTargets[0] || null;
+  const monthlyTarget = Number(primarySavingsTarget?.monthlyContribution || savingsGuidance?.recommendedMonthlySavings || 0);
+  const now = useMemo(() => new Date(), []);
+  const currentMonthKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+  const daysInMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+  const dayOfMonth = now.getDate();
+  const savedThisMonth = useMemo(() => transactions
+    .filter((transaction) => transaction.date?.startsWith(currentMonthKey))
+    .filter((transaction) => transaction.categoryType === "savings" || transaction.goalId || String(transaction.categoryType || "").startsWith("goal:"))
+    .reduce((sum, transaction) => sum + Number(transaction.amount || 0), 0), [currentMonthKey, transactions]);
+  const savingsGap = Math.max(0, monthlyTarget - savedThisMonth);
+  const projectedMonthEnd = dayOfMonth > 0 ? Math.round((savedThisMonth / dayOfMonth) * daysInMonth) : savedThisMonth;
+  const requiredDaily = savingsGap > 0 ? Math.round(savingsGap / Math.max(1, daysInMonth - dayOfMonth + 1)) : 0;
+  const splitAcrossGoals = useMemo(() => {
+    const activeGoals = goals
+      .map((goal) => {
+        const target = Number(goal.target || 0);
+        const current = Number(goal.current || 0);
+        const amountLeft = Math.max(0, target - current);
+        const deadline = goal.deadline ? new Date(`${goal.deadline}T12:00:00`) : null;
+        const daysLeft = deadline ? Math.max(1, Math.ceil((deadline - now) / 86400000)) : 180;
+        const urgencyBoost = daysLeft <= 31 ? 3 : daysLeft <= 90 ? 2 : 1;
+        const priorityBoost = String(goal.priority || "").toLowerCase() === "high" ? 1.5 : String(goal.priority || "").toLowerCase() === "medium" ? 1.15 : 1;
+        const weight = amountLeft > 0 ? (amountLeft / Math.max(daysLeft, 1)) * urgencyBoost * priorityBoost : 0;
+        return { ...goal, amountLeft, daysLeft, weight };
+      })
+      .filter((goal) => goal.amountLeft > 0)
+      .sort((a, b) => b.weight - a.weight);
+
+    const totalWeight = activeGoals.reduce((sum, goal) => sum + goal.weight, 0);
+    if (!activeGoals.length || totalWeight <= 0 || monthlyTarget <= 0) return [];
+    return activeGoals.slice(0, 4).map((goal) => ({
+      id: goal.id,
+      name: goal.name,
+      daysLeft: goal.daysLeft,
+      amountLeft: goal.amountLeft,
+      suggestedContribution: Math.round((goal.weight / totalWeight) * monthlyTarget),
+    }));
+  }, [goals, monthlyTarget, now]);
+
   async function add(event) {
     event.preventDefault();
-    await api("/api/savings", { method: "POST", body: JSON.stringify({ ...form, target: Number(form.target), current: Number(form.current), monthlyContribution: Number(form.monthlyContribution) }) });
-    setForm({ name: "", target: "", current: "0", monthlyContribution: savingsGuidance?.recommendedMonthlySavings || 0, deadline: "" });
+    await api("/api/savings", {
+      method: "POST",
+      body: JSON.stringify({
+        ...form,
+        target: parseMoneyInput(form.target),
+        current: parseMoneyInput(form.current),
+        monthlyContribution: parseMoneyInput(form.monthlyContribution),
+      }),
+    });
+    setForm({ name: "", target: "", current: "0", monthlyContribution: String(savingsGuidance?.recommendedMonthlySavings || 0), deadline: "" });
     await onDone();
   }
   return (
     <div className="dashboard-page">
+      <section className="summary-grid three">
+        <Metric icon={<Target size={19} />} label="Monthly Target" value={formatMoney(monthlyTarget)} />
+        <Metric icon={<PiggyBank size={19} />} label="Saved This Month" value={formatMoney(savedThisMonth)} valueClassName={savedThisMonth >= monthlyTarget ? "transaction-income-value" : ""} />
+        <Metric icon={<AlertTriangle size={19} />} label="Catch-up Needed" value={formatMoney(savingsGap)} valueClassName={savingsGap > 0 ? "transaction-expense-value" : "transaction-income-value"} />
+      </section>
+      <section className="summary-grid three">
+        <Metric icon={<CalendarDays size={19} />} label="Required Daily Pace" value={formatMoney(requiredDaily)} />
+        <Metric icon={<TrendingUp size={19} />} label="Projected Month-End" value={formatMoney(projectedMonthEnd)} valueClassName={projectedMonthEnd >= monthlyTarget ? "transaction-income-value" : ""} />
+        <Metric icon={<Activity size={19} />} label="Target Hit Chance" value={projectedMonthEnd >= monthlyTarget ? "On pace" : "Behind pace"} valueClassName={projectedMonthEnd >= monthlyTarget ? "transaction-income-value" : "transaction-expense-value"} />
+      </section>
       <section className="panel section savings-shell">
         <h2>Savings Plan</h2>
         <p className="hint">Recommended target for age {savingsGuidance?.age || "profile"} is {Math.round((savingsGuidance?.recommendedSavingsRate || 0.2) * 100)}% of monthly income: {formatMoney(savingsGuidance?.recommendedMonthlySavings || income.monthlyIncome * 0.2)}.</p>
+        {primarySavingsTarget && (
+          <p className="hint">
+            Current personal savings target: {formatMoney(primarySavingsTarget.target)} with a planned monthly pace of {formatMoney(primarySavingsTarget.monthlyContribution)}.
+          </p>
+        )}
         <form className="goal-form" onSubmit={add}>
           <input placeholder="What are you saving for?" value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} required />
-          <input type="number" min="1" placeholder="Target" value={form.target} onChange={(event) => setForm({ ...form, target: event.target.value })} required />
-          <input type="number" min="0" placeholder="Current" value={form.current} onChange={(event) => setForm({ ...form, current: event.target.value })} />
-          <input type="number" min="0" placeholder="Monthly" value={form.monthlyContribution} onChange={(event) => setForm({ ...form, monthlyContribution: event.target.value })} />
+          <input placeholder="Target" value={formatMoneyInput(form.target)} inputMode="decimal" onChange={(event) => setForm({ ...form, target: formatMoneyInput(event.target.value) })} required />
+          <input placeholder="Current" value={formatMoneyInput(form.current)} inputMode="decimal" onChange={(event) => setForm({ ...form, current: formatMoneyInput(event.target.value) })} />
+          <input placeholder="Monthly" value={formatMoneyInput(form.monthlyContribution)} inputMode="decimal" onChange={(event) => setForm({ ...form, monthlyContribution: formatMoneyInput(event.target.value) })} />
           <button className="btn" type="submit"><Plus size={17} />Add Savings</button>
         </form>
+      </section>
+      <section className="panel section">
+        <div className="section-heading">
+          <div>
+            <h2>Recommended Goal Split</h2>
+            <p className="hint">How this month&apos;s savings target can be distributed across your active goals.</p>
+          </div>
+        </div>
+        <div className="goal-grid">
+          {splitAcrossGoals.length ? splitAcrossGoals.map((goal) => (
+            <article className="panel section goal-card" key={goal.id}>
+              <div className="section-heading">
+                <div>
+                  <h2>{goal.name}</h2>
+                  <p className="hint">{goal.daysLeft} days left</p>
+                </div>
+                <strong className="transaction-income-value">{formatMoney(goal.suggestedContribution)}</strong>
+              </div>
+              <div className="money-row">
+                <span>Amount left {formatMoney(goal.amountLeft)}</span>
+                <span>Suggested this month {formatMoney(goal.suggestedContribution)}</span>
+              </div>
+            </article>
+          )) : (
+            <div className="empty-state">Add active goals to get an automatic split recommendation.</div>
+          )}
+        </div>
       </section>
       <section className="goal-grid">{savingsTargets.map((target) => <SavingsCard key={target.id} target={target} onDone={onDone} />)}</section>
     </div>
@@ -1184,51 +2321,1003 @@ function SavingsCard({ target, onDone }) {
   );
 }
 
-const AnalyticsPage = memo(function AnalyticsPage({ categories, transactions, health, income, savingsGuidance, goals }) {
-  const days = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map((day) => ({ day, spending: 0 }));
-  transactions.filter((transaction) => transaction.categoryType !== "credit").forEach((transaction) => {
-    days[new Date(`${transaction.date}T12:00:00`).getDay()].spending += Number(transaction.amount || 0);
-  });
-  const behavior = [
-    { metric: "Savings Rate", score: Math.round(health.components.savingsScore) },
-    { metric: "Budget", score: Math.round(health.components.spendingScore) },
-    { metric: "Debt", score: Math.round(health.components.debtScore) },
-    { metric: "Habits", score: Math.round(health.components.habitsScore) },
-  ];
-  const expenses = transactions.filter((t) => t.categoryType !== "credit").reduce((sum, t) => sum + Number(t.amount || 0), 0);
-  const forecast = Math.round(expenses * 1.08);
+const AnalyticsPage = memo(function AnalyticsPage({ categories, transactions, health, income, savingsGuidance, goals, analytics }) {
+  const today = useMemo(() => new Date(), []);
+  const monthFormatter = useMemo(() => new Intl.DateTimeFormat("en-IN", { month: "short", timeZone: "Asia/Kolkata" }), []);
+  const fallbackMonthSeries = useMemo(() => {
+    const transactionMonths = transactions
+      .map((transaction) => String(transaction.date || "").slice(0, 7))
+      .filter((key) => /^\d{4}-\d{2}$/.test(key))
+      .sort();
+    const earliestKey = transactionMonths[0];
+    const minimumStart = new Date(today.getFullYear(), today.getMonth() - 11, 1);
+    const earliestDate = earliestKey ? new Date(`${earliestKey}-01T12:00:00+05:30`) : null;
+    const startDate = earliestDate && earliestDate < minimumStart ? earliestDate : minimumStart;
+    const endDate = new Date(today.getFullYear(), today.getMonth(), 1);
+    const months = [];
+    for (const cursor = new Date(startDate); cursor <= endDate; cursor.setMonth(cursor.getMonth() + 1)) {
+      const date = new Date(cursor);
+      months.push({
+        key: `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`,
+        label: monthFormatter.format(date),
+        expenses: 0,
+        savings: 0,
+        credits: 0,
+        goals: 0,
+      });
+    }
+    const byKey = new Map(months.map((month) => [month.key, month]));
+    transactions.forEach((transaction) => {
+      const key = String(transaction.date || "").slice(0, 7);
+      const bucket = byKey.get(key);
+      if (!bucket) return;
+      const amount = Number(transaction.amount || 0);
+      if (transaction.categoryType === "credit") {
+        bucket.credits += amount;
+        return;
+      }
+      if (transaction.goalId || isGoalCategoryType(transaction.categoryType)) {
+        bucket.goals += amount;
+      }
+      if (transaction.categoryType === "savings" || transaction.goalId || isGoalCategoryType(transaction.categoryType)) {
+        bucket.savings += amount;
+      }
+      bucket.expenses += amount;
+    });
+    return months;
+  }, [monthFormatter, today, transactions]);
+  const monthSeries = analytics?.monthSeries?.length ? analytics.monthSeries : fallbackMonthSeries;
+  const currentMonth = monthSeries[monthSeries.length - 1] || { expenses: 0, savings: 0, credits: 0, goals: 0 };
+  const previousMonth = monthSeries[monthSeries.length - 2] || { expenses: 0, savings: 0, credits: 0, goals: 0 };
+  const netBalance = income.monthlyIncome + currentMonth.credits - currentMonth.expenses;
+  const savingsGap = Math.max(0, (savingsGuidance?.recommendedMonthlySavings || 0) - currentMonth.savings);
+  const weekendSpend = transactions
+    .filter((transaction) => transaction.categoryType !== "credit")
+    .reduce((sum, transaction) => {
+      const day = new Date(`${transaction.date}T12:00:00+05:30`).getDay();
+      return sum + ((day === 0 || day === 6) ? Number(transaction.amount || 0) : 0);
+    }, 0);
+  const totalSpend = monthSeries.reduce((sum, month) => sum + month.expenses, 0);
+  const weekendRatio = totalSpend > 0 ? Math.round((weekendSpend / totalSpend) * 100) : 0;
+  const topRiskCategories = [...categories]
+    .filter((category) => category.status !== "green")
+    .sort((a, b) => (b.spent - b.expected) - (a.spent - a.expected))
+    .slice(0, 2)
+    .map((category) => ({
+      title: `${category.label} is off pace`,
+      risk: `${formatMoney(Math.max(0, category.spent - category.expected))} ahead of expected pace`,
+      recovery: `Reduce by about ${formatMoney(Math.max(0, category.spent - category.expected))} over the rest of the month.`,
+      tone: category.status,
+    }));
+  const goalForecasts = goals.map((goal) => {
+    const target = Number(goal.target || 0);
+    const current = Number(goal.current || 0);
+    const amountLeft = Math.max(0, target - current);
+    const monthlyGoalFlow = Math.max(0, monthSeries.reduce((sum, month) => sum + month.goals, 0) / Math.max(1, monthSeries.filter((month) => month.goals > 0).length || 1));
+    const monthsNeeded = monthlyGoalFlow > 0 ? Math.ceil(amountLeft / monthlyGoalFlow) : null;
+    const projected = monthsNeeded !== null ? new Date(today.getFullYear(), today.getMonth() + monthsNeeded, 1) : null;
+    const deadline = goal.deadline ? new Date(`${goal.deadline}T12:00:00+05:30`) : null;
+    const delayed = projected && deadline ? projected.getTime() > deadline.getTime() : false;
+    return {
+      ...goal,
+      amountLeft,
+      monthlyGoalFlow,
+      projected,
+      delayed,
+    };
+  }).sort((a, b) => a.amountLeft - b.amountLeft);
+  const riskAndRecovery = [
+    ...topRiskCategories,
+    ...(savingsGap > 0 ? [{
+      title: "Savings pace is behind target",
+      risk: `${formatMoney(savingsGap)} still needed this month`,
+      recovery: `Move ${formatMoney(Math.ceil(savingsGap / Math.max(1, 4 - Math.min(3, Math.floor(today.getDate() / 7)) )))} each remaining week into savings.`,
+      tone: "orange",
+    }] : []),
+    ...(goalForecasts.filter((goal) => goal.delayed).slice(0, 1).map((goal) => ({
+      title: `${goal.name} is drifting past target date`,
+      risk: `${formatMoney(goal.amountLeft)} still left`,
+      recovery: goal.monthlyGoalFlow > 0 ? `Raise monthly goal funding above ${formatMoney(goal.monthlyGoalFlow)}.` : "Start a recurring contribution to build momentum.",
+      tone: "red",
+    }))),
+  ].slice(0, 3);
+  const trajectoryVerdict = savingsGap > 0
+    ? "Savings pace is slipping even though core spending is mostly under control."
+    : netBalance < 0
+      ? "Current spend is running above healthy monthly balance."
+      : "Cash flow is stable and the month is still recoverable without sharp cuts.";
+  const monthDelta = currentMonth.expenses - previousMonth.expenses;
+  const savingsDelta = currentMonth.savings - previousMonth.savings;
+  const recurringNotes = Object.entries(transactions
+    .filter((transaction) => transaction.categoryType !== "credit")
+    .reduce((acc, transaction) => {
+      const key = String(transaction.note || "").trim().toLowerCase();
+      if (!key) return acc;
+      acc[key] = (acc[key] || 0) + 1;
+      return acc;
+    }, {}))
+    .filter(([, count]) => count >= 2)
+    .slice(0, 2)
+    .map(([note, count]) => ({ note, count }));
+  const topSpendDate = analytics?.topSpendDate || null;
+  const healthTrendData = analytics?.healthTrend?.length ? analytics.healthTrend : [{ label: monthSeries[monthSeries.length - 1]?.label || "Now", score: Number(health.score || 0) }];
+  const savingsRatePercent = income.monthlyIncome > 0 ? Math.max(0, Math.min(100, Math.round((currentMonth.savings / income.monthlyIncome) * 100))) : 0;
+  const netBalancePercent = income.monthlyIncome > 0 ? Math.max(0, Math.min(100, Math.round((Math.max(0, netBalance) / income.monthlyIncome) * 100))) : 0;
+  const healthPercent = Math.max(0, Math.min(100, Math.round(health.score || 0)));
   return (
-    <div className="dashboard-page">
-      <section className="summary-grid">
-        <Metric icon={<TrendingUp size={19} />} label="Avg Monthly Savings" value={formatMoney(savingsGuidance?.recommendedMonthlySavings || 0)} />
-        <Metric icon={<CalendarDays size={19} />} label="Highest Spend Day" value={days.sort((a, b) => b.spending - a.spending)[0]?.day || "None"} />
-        <Metric icon={<Activity size={19} />} label="Budget Score" value={`${health.score}/100`} />
-        <Metric icon={<AlertTriangle size={19} />} label="Savings Gap" value={formatMoney(Math.max(0, (savingsGuidance?.recommendedMonthlySavings || 0) - (categories.find((c) => c.type === "savings")?.spent || 0)))} />
-      </section>
-      <section className="analytics-grid">
-        <div className="panel section"><h2>Financial Behavior Analysis</h2><BehaviorRadarChart data={behavior} /></div>
-        <ActualExpectedChart chartData={categories.map((category) => ({ name: category.label, Actual: category.spent, Expected: category.expected }))} />
-      </section>
-      <section className="panel section prediction-grid">
-        <h2>Predictive Analytics</h2>
-        <div className="summary-grid three">
-          <Metric icon={<CalendarDays size={19} />} label="Next Month Forecast" value={formatMoney(forecast)} />
-          <Metric icon={<TrendingUp size={19} />} label="Savings Potential" value={formatMoney(Math.max(0, income.monthlyIncome - forecast))} />
-          <Metric icon={<Target size={19} />} label="Goal Count" value={`${goals.length} active`} />
+    <div className="dashboard-page analytics-page-redesign">
+      <section className="analytics-hero">
+        <div className="analytics-hero-copy">
+          <span className="eyebrow">Financial trajectory</span>
+          <h2>{trajectoryVerdict}</h2>
+          <p className="hint">This page focuses on change, forecast, and recovery. It avoids repeating dashboard allocation views.</p>
+          <div className="analytics-score-band">
+            <HealthScoreTrendChart data={healthTrendData} />
+          </div>
         </div>
+        <div className="analytics-hero-metrics">
+          <div>
+            <div className="analytics-metric-head">
+              <span>Health score</span>
+              <CircleGauge size={16} />
+            </div>
+            <strong>{health.score}/100</strong>
+            <small>{health.category}</small>
+            <div className="analytics-mini-track"><span style={{ width: `${healthPercent}%` }} /></div>
+          </div>
+          <div>
+            <div className="analytics-metric-head">
+              <span>Net balance this month</span>
+              <TrendingUp size={16} />
+            </div>
+            <strong className={netBalance >= 0 ? "positive" : "negative"}>{formatMoney(netBalance)}</strong>
+            <small>{monthDelta >= 0 ? `${formatMoney(Math.abs(monthDelta))} more spent than last month` : `${formatMoney(Math.abs(monthDelta))} less spent than last month`}</small>
+            <div className="analytics-mini-track"><span style={{ width: `${netBalancePercent}%` }} /></div>
+          </div>
+          <div>
+            <div className="analytics-metric-head">
+              <span>Savings gap</span>
+              <Target size={16} />
+            </div>
+            <strong className={savingsGap > 0 ? "negative" : "positive"}>{formatMoney(savingsGap)}</strong>
+            <small>{savingsDelta >= 0 ? `${formatMoney(savingsDelta)} above last month` : `${formatMoney(Math.abs(savingsDelta))} below last month`}</small>
+            <div className="analytics-mini-track"><span style={{ width: `${savingsRatePercent}%` }} /></div>
+          </div>
+        </div>
+      </section>
+
+      <section className="analytics-redesign-grid">
+        <article className="panel section analytics-momentum-panel">
+          <div className="section-header">
+            <div>
+              <h2>Monthly Momentum</h2>
+              <p className="hint">Month-by-month view of expenses, savings moves, and credits across your tracked history.</p>
+            </div>
+          </div>
+          <div className="analytics-timeline">
+            {monthSeries.map((month) => {
+              const maxValue = Math.max(...monthSeries.map((item) => Math.max(item.expenses, item.savings, item.credits, 1)));
+              return (
+                <div className="analytics-timeline-month" key={month.key}>
+                  <span className="analytics-timeline-label">{month.label}</span>
+                  <div className="analytics-timeline-bars">
+                    <div className="analytics-timeline-bar expense" style={{ height: `${Math.max(8, Math.round((month.expenses / maxValue) * 100))}%` }} />
+                    <div className="analytics-timeline-bar savings" style={{ height: `${Math.max(8, Math.round((month.savings / maxValue) * 100))}%` }} />
+                    <div className="analytics-timeline-bar credit" style={{ height: `${Math.max(8, Math.round((month.credits / maxValue) * 100))}%` }} />
+                  </div>
+                  <small>{formatMoney(month.expenses)}</small>
+                </div>
+              );
+            })}
+          </div>
+          <div className="analytics-inline-legend">
+            <span><i className="legend-swatch expense" />Expenses</span>
+            <span><i className="legend-swatch savings" />Savings</span>
+            <span><i className="legend-swatch credit" />Credits</span>
+          </div>
+        </article>
+
+        <article className="panel section analytics-risk-panel">
+          <div className="section-header">
+            <div>
+              <h2>Risk and Recovery</h2>
+              <p className="hint">The shortest path to improving this month.</p>
+            </div>
+          </div>
+          <div className="analytics-recovery-list">
+            {riskAndRecovery.length ? riskAndRecovery.map((item) => (
+              <div className={`analytics-recovery-item ${item.tone}`} key={item.title}>
+                <div className="analytics-recovery-head">
+                  <strong>{item.title}</strong>
+                  {item.tone === "red" ? <AlertTriangle size={16} /> : item.tone === "orange" ? <TrendingUp size={16} /> : <Check size={16} />}
+                </div>
+                <div className="analytics-severity-track"><span className={item.tone} /></div>
+                <p className="hint">{item.risk}</p>
+                <small>{item.recovery}</small>
+              </div>
+            )) : (
+              <div className="analytics-recovery-item green">
+                <strong>No immediate recovery pressure</strong>
+                <p className="hint">Current categories and savings pace are stable.</p>
+                <small>Use this month to keep goal funding consistent.</small>
+              </div>
+            )}
+          </div>
+        </article>
+      </section>
+
+      <section className="analytics-redesign-grid lower">
+        <article className="panel section analytics-forecast-panel">
+          <div className="section-header">
+            <div>
+              <h2>Goal Forecast Engine</h2>
+              <p className="hint">Projected completion timing at your current contribution pace.</p>
+            </div>
+          </div>
+          <div className="analytics-forecast-list">
+            {goalForecasts.length ? goalForecasts.map((goal) => (
+              <div className="analytics-forecast-row" key={goal.id}>
+                <div>
+                  <strong>{goal.emoji} {goal.name}</strong>
+                  <p className="hint">{formatMoney(goal.amountLeft)} left</p>
+                  <div className="analytics-goal-progress">
+                    <span style={{ width: `${goal.target > 0 ? Math.max(6, Math.min(100, Math.round((Number(goal.current || 0) / Number(goal.target || 1)) * 100))) : 0}%` }} />
+                  </div>
+                </div>
+                <div>
+                  <span className={`badge ${goal.delayed ? "red" : "green"}`}>{goal.delayed ? "Behind pace" : "On pace"}</span>
+                  <p className="hint">{goal.monthlyGoalFlow > 0 ? `${formatMoney(goal.monthlyGoalFlow)} average monthly funding` : "No contribution pace yet"}</p>
+                </div>
+                <div className="analytics-forecast-date">
+                  <strong>{goal.projected ? formatShortIndiaDate(`${goal.projected.getFullYear()}-${String(goal.projected.getMonth() + 1).padStart(2, "0")}-01`) : "Needs first transfer"}</strong>
+                  <small>{goal.deadline ? `Target ${formatShortIndiaDate(goal.deadline)}` : "No deadline"}</small>
+                </div>
+              </div>
+            )) : <div className="empty-state">No active goals to forecast yet.</div>}
+          </div>
+        </article>
+
+        <article className="panel section analytics-signals-panel">
+          <div className="section-header">
+            <div>
+              <h2>Behavior Signals</h2>
+              <p className="hint">Patterns worth noticing before they become budget problems.</p>
+            </div>
+          </div>
+          <div className="analytics-signals-list">
+            <div className="analytics-signal-card">
+              <div className="analytics-signal-head">
+                <span>Weekend spend share</span>
+                <CalendarDays size={16} />
+              </div>
+              <strong>{weekendRatio}%</strong>
+              <div className="analytics-mini-track"><span style={{ width: `${weekendRatio}%` }} /></div>
+              <small>{weekendRatio >= 35 ? "Weekend spending is materially shaping the month." : "Weekend spending is not dominating the month."}</small>
+            </div>
+            <div className="analytics-signal-card">
+              <div className="analytics-signal-head">
+                <span>Highest spend day</span>
+                <Activity size={16} />
+              </div>
+              <strong>{topSpendDate?.date ? formatShortIndiaDate(topSpendDate.date) : "None"}</strong>
+              <div className="analytics-mini-track"><span style={{ width: `${topSpendDate?.spending && totalSpend ? Math.max(8, Math.round((topSpendDate.spending / totalSpend) * 100)) : 8}%` }} /></div>
+              <small>{topSpendDate?.spending ? formatMoney(topSpendDate.spending) : "No spending recorded."}</small>
+            </div>
+            <div className="analytics-signal-card">
+              <div className="analytics-signal-head">
+                <span>Recurring spend notes</span>
+                <CreditCard size={16} />
+              </div>
+              <strong>{recurringNotes.length || 0}</strong>
+              <div className="analytics-mini-track"><span style={{ width: `${Math.max(8, Math.min(100, recurringNotes.length * 24))}%` }} /></div>
+              <small>{recurringNotes.length ? recurringNotes.map((item) => `${item.note} x${item.count}`).join(" • ") : "No repeated spending notes detected."}</small>
+            </div>
+            <div className="analytics-signal-card">
+              <div className="analytics-signal-head">
+                <span>What changed</span>
+                <TrendingUp size={16} />
+              </div>
+              <strong>{monthDelta >= 0 ? "Expense pressure rose" : "Expense pressure eased"}</strong>
+              <div className="analytics-mini-track"><span style={{ width: `${Math.max(8, Math.min(100, income.monthlyIncome > 0 ? Math.round((Math.abs(monthDelta) / income.monthlyIncome) * 100) : 8))}%` }} /></div>
+              <small>{monthDelta >= 0 ? `${formatMoney(Math.abs(monthDelta))} more spent than last month.` : `${formatMoney(Math.abs(monthDelta))} less spent than last month.`}</small>
+            </div>
+          </div>
+        </article>
       </section>
     </div>
   );
 });
 
-const InvestmentsPage = memo(function InvestmentsPage({ metals }) {
+function TrendLine({ points = [], accent = "#7DD3FC", height = 42, strokeWidth = 1.7, smooth = false }) {
+  const path = useMemo(() => buildLinePath(points, 100, height, smooth), [height, points, smooth]);
   return (
-    <div className="dashboard-page">
-      <section className="panel section shell-page">
-        <h2>Investments</h2>
-        <p className="hint">Investment tracking shell. We will build portfolio, allocation, and market integrations next.</p>
-        <div className="metal-list">{metals.map((metal) => <div className="metal-row" key={metal.type}><strong>{metal.type}</strong><span className={`badge ${metal.change >= 0 ? "green" : "red"}`}>{metal.percent}%</span></div>)}</div>
+    <svg className="trend-line" viewBox={`0 0 100 ${height}`} preserveAspectRatio="none" role="img" aria-hidden="true">
+      <path
+        d={path}
+        fill="none"
+        stroke={accent}
+        strokeWidth={strokeWidth}
+        strokeLinecap="round"
+        strokeLinejoin={smooth ? "round" : "miter"}
+        vectorEffect="non-scaling-stroke"
+        shapeRendering="geometricPrecision"
+      />
+    </svg>
+  );
+}
+
+function PortfolioRangeChart({ points = [], accent = "#7DD3FC", height = 104, strokeWidth = 1.7, currency = "INR", rangeKey = "1M" }) {
+  const path = useMemo(() => buildLinePath(points, 100, height, false), [height, points]);
+  const coordinates = useMemo(() => buildLineCoordinates(points, 100, height), [height, points]);
+  const [hoverIndex, setHoverIndex] = useState(-1);
+  const activeIndex = hoverIndex >= 0 && hoverIndex < points.length ? hoverIndex : points.length - 1;
+  const activePoint = points[activeIndex] || null;
+  const activeCoordinate = coordinates[activeIndex] || null;
+
+  function handleMove(event) {
+    if (!points.length) return;
+    const bounds = event.currentTarget.getBoundingClientRect();
+    const relativeX = Math.min(Math.max(event.clientX - bounds.left, 0), bounds.width);
+    const nextIndex = points.length === 1
+      ? 0
+      : Math.round((relativeX / Math.max(bounds.width, 1)) * (points.length - 1));
+    setHoverIndex(nextIndex);
+  }
+
+  function hoverLabel(point) {
+    if (!point) return "";
+    if (rangeKey === "1D") return point.label || "Session";
+    return formatShortIndiaDate(point.date || point.label || "");
+  }
+
+  return (
+    <div className="portfolio-range-chart" onMouseMove={handleMove} onMouseLeave={() => setHoverIndex(-1)}>
+      <svg className="trend-line interactive" viewBox={`0 0 100 ${height}`} preserveAspectRatio="none" role="img" aria-label="Portfolio range chart">
+        <path
+          d={path}
+          fill="none"
+          stroke={accent}
+          strokeWidth={strokeWidth}
+          strokeLinecap="round"
+          strokeLinejoin="miter"
+          vectorEffect="non-scaling-stroke"
+          shapeRendering="geometricPrecision"
+        />
+        {activeCoordinate && (
+          <>
+            <line
+              x1={activeCoordinate.x}
+              y1="0"
+              x2={activeCoordinate.x}
+              y2={height}
+              className="portfolio-range-crosshair"
+            />
+            <circle
+              cx={activeCoordinate.x}
+              cy={activeCoordinate.y}
+              r="2.1"
+              fill={accent}
+              stroke="rgba(255,255,255,0.96)"
+              strokeWidth="0.9"
+            />
+          </>
+        )}
+      </svg>
+      {activePoint && activeCoordinate && (
+        <div
+          className="portfolio-range-tooltip"
+          style={{
+            left: `${Math.min(92, Math.max(8, activeCoordinate.x))}%`,
+          }}
+        >
+          <strong>{formatMarketMoney(activePoint.price, currency)}</strong>
+          <span>{hoverLabel(activePoint)}</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+const AssistantPage = memo(function AssistantPage({ conversations = [], conversation, messages, draft, error, loading, onDraftChange, onSubmit, onSelectConversation, onNewConversation }) {
+  const hasMessages = messages.length > 0;
+  const questions = assistantQuestionsForPage("assistant");
+  const conversationTitle = conversation?.title || (hasMessages ? assistantConversationTitle(messages.find((message) => message.role === "user")?.content) : "New Chat");
+  const conversationTimestamp = formatAssistantTimestamp(conversation?.createdAt || messages[0]?.createdAt);
+
+  function submit(event) {
+    event.preventDefault();
+    onSubmit(draft);
+  }
+
+  return (
+    <div className={`dashboard-page assistant-page ${hasMessages ? "with-history" : "empty"}`}>
+      <div className="assistant-shell">
+        <aside className="assistant-history">
+          <div className="section-heading">
+            <div>
+              <h2>Chats</h2>
+              <p className="hint">Saved assistant conversations</p>
+            </div>
+            <button className="btn secondary" type="button" onClick={onNewConversation}><Plus size={16} />New</button>
+          </div>
+          <div className="assistant-history-list">
+            {conversations.length ? conversations.map((item) => (
+              <button
+                key={item.id}
+                type="button"
+                className={`assistant-history-item ${conversation?.id === item.id ? "active" : ""}`}
+                onClick={() => onSelectConversation(item)}
+              >
+                <strong>{item.title}</strong>
+                <span>{formatAssistantTimestamp(item.createdAt)}</span>
+              </button>
+            )) : <div className="empty-state">No saved chats yet.</div>}
+          </div>
+        </aside>
+
+        {!hasMessages ? (
+          <section className="assistant-hero">
+            <div className="assistant-kicker"><Sparkles size={18} /><span>Finova AI Assistant</span></div>
+            <h2>Start a new conversation.</h2>
+            <p className="hint">This workspace keeps its own saved chats and uses your full Finova data, separate from the quick assistants on other pages.</p>
+            <form className="assistant-composer centered" onSubmit={submit}>
+              <textarea
+                value={draft}
+                onChange={(event) => onDraftChange(event.target.value)}
+                placeholder="Ask anything about your finances..."
+                rows={3}
+              />
+              <button className="btn" type="submit" disabled={loading || !draft.trim()}>
+                <Sparkles size={17} />
+                {loading ? "Thinking..." : "Ask Finova AI"}
+              </button>
+            </form>
+            <div className="assistant-samples">
+              {questions.map((question) => (
+                <button key={question} type="button" className="assistant-sample" onClick={() => onSubmit(question)}>
+                  {question}
+                </button>
+              ))}
+            </div>
+            {error && <div className="alert risk"><AlertTriangle size={18} /><span>{error}</span></div>}
+          </section>
+        ) : (
+          <section className="assistant-thread-shell">
+            <div className="assistant-thread-meta">
+              <div>
+                <h2>{conversationTitle}</h2>
+                <p className="hint">{conversationTimestamp || "Unsaved conversation"}</p>
+              </div>
+            </div>
+            <div className="assistant-thread">
+              {messages.map((message, index) => (
+                <article key={`${message.role}-${index}`} className={`assistant-message ${message.role}`}>
+                  <div className="assistant-avatar">{message.role === "assistant" ? "AI" : "You"}</div>
+                  <div className="assistant-bubble">
+                    <p>{message.content}</p>
+                    {message.modelUsed && <span className="hint">Model: {message.modelUsed}</span>}
+                  </div>
+                </article>
+              ))}
+              {loading && (
+                <article className="assistant-message assistant">
+                  <div className="assistant-avatar">AI</div>
+                  <div className="assistant-bubble typing">
+                    <span />
+                    <span />
+                    <span />
+                  </div>
+                </article>
+              )}
+            </div>
+            <form className="assistant-composer docked" onSubmit={submit}>
+              <textarea value={draft} onChange={(event) => onDraftChange(event.target.value)} placeholder="Ask a follow-up..." rows={2} />
+              <button className="btn" type="submit" disabled={loading || !draft.trim()}>
+                <Sparkles size={17} />
+                Send
+              </button>
+            </form>
+            <div className="assistant-samples compact">
+              {questions.map((question) => (
+                <button key={question} type="button" className="assistant-sample" onClick={() => onSubmit(question)}>
+                  {question}
+                </button>
+              ))}
+            </div>
+            {error && <div className="alert risk"><AlertTriangle size={18} /><span>{error}</span></div>}
+          </section>
+        )}
+      </div>
+    </div>
+  );
+});
+
+const AssistantOverlay = memo(function AssistantOverlay({ messages, draft, error, loading, pageContext, onDraftChange, onSubmit, onClose }) {
+  const questions = assistantQuestionsForPage(pageContext);
+
+  function submit(event) {
+    event.preventDefault();
+    onSubmit(draft);
+  }
+
+  return (
+    <div className="assistant-overlay-backdrop" onClick={onClose}>
+      <section className="assistant-overlay-panel" onClick={(event) => event.stopPropagation()}>
+        <div className="assistant-overlay-head">
+          <div>
+            <h2>AI Assistant</h2>
+            <p className="hint">Context source: {pageLabelForAssistant(pageContext)}</p>
+          </div>
+          <button className="btn secondary icon" type="button" title="Close assistant" onClick={onClose}><X size={16} /></button>
+        </div>
+        <div className="assistant-overlay-thread">
+          {messages.length ? messages.map((message, index) => (
+            <article key={`${message.role}-${index}`} className={`assistant-message ${message.role}`}>
+              <div className="assistant-avatar">{message.role === "assistant" ? "AI" : "You"}</div>
+              <div className="assistant-bubble">
+                <p>{message.content}</p>
+                {message.modelUsed && <span className="hint">Model: {message.modelUsed}</span>}
+              </div>
+            </article>
+          )) : (
+            <div className="assistant-overlay-empty">
+              {questions.map((question) => (
+                <button key={question} type="button" className="assistant-sample" onClick={() => onSubmit(question)}>
+                  {question}
+                </button>
+              ))}
+            </div>
+          )}
+          {loading && (
+            <article className="assistant-message assistant">
+              <div className="assistant-avatar">AI</div>
+              <div className="assistant-bubble typing">
+                <span />
+                <span />
+                <span />
+              </div>
+            </article>
+          )}
+        </div>
+        <form className="assistant-composer docked overlay" onSubmit={submit}>
+          <textarea value={draft} onChange={(event) => onDraftChange(event.target.value)} placeholder="Ask about this page..." rows={2} />
+          <button className="btn" type="submit" disabled={loading || !draft.trim()}>
+            <Sparkles size={17} />
+            Send
+          </button>
+        </form>
+        {error && <div className="alert risk"><AlertTriangle size={18} /><span>{error}</span></div>}
       </section>
+    </div>
+  );
+});
+
+const InvestmentsPage = memo(function InvestmentsPage() {
+  const [portfolio, setPortfolio] = useState({ holdings: [], positions: [], summary: { rangeSeries: {} }, watchlist: [], insights: [], marketConfigured: false });
+  const [rows, setRows] = useState([{ symbol: "", name: "", shares: "", totalCost: "", exchange: "", currency: "INR" }]);
+  const [selectedRange, setSelectedRange] = useState("1M");
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+  const [investmentInsights, setInvestmentInsights] = useState([]);
+  const [insightsLoading, setInsightsLoading] = useState(false);
+  const [insightsError, setInsightsError] = useState("");
+
+  const loadPortfolio = useCallback(async () => {
+    setLoading(true);
+    setError("");
+    try {
+      const cachedPortfolio = readPortfolioSessionCache();
+      if (cachedPortfolio) {
+        setPortfolio(cachedPortfolio);
+        return;
+      }
+      const nextPortfolio = await api("/api/market?mode=portfolio");
+      writePortfolioSessionCache(nextPortfolio);
+      setPortfolio(nextPortfolio);
+    } catch (loadError) {
+      setError(loadError.message);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  const reloadPortfolio = useCallback(async () => {
+    clearPortfolioSessionCache();
+    setLoading(true);
+    setError("");
+    try {
+      const nextPortfolio = await api("/api/market?mode=portfolio");
+      writePortfolioSessionCache(nextPortfolio);
+      setPortfolio(nextPortfolio);
+    } catch (loadError) {
+      setError(loadError.message);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadPortfolio();
+  }, [loadPortfolio]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadInsights() {
+      setInsightsLoading(true);
+      setInsightsError("");
+      try {
+        const result = await api("/api/assistant/insights", {
+          method: "POST",
+          body: JSON.stringify({ page: "investments" }),
+        });
+        if (!cancelled) setInvestmentInsights((result.insights || []).map(parseInsightCard));
+      } catch (loadError) {
+        if (!cancelled) {
+          setInvestmentInsights([]);
+          setInsightsError(loadError.message);
+        }
+      } finally {
+        if (!cancelled) setInsightsLoading(false);
+      }
+    }
+
+    loadInsights();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const selectedRangeMetrics = portfolio.summary?.rangeMetrics?.[selectedRange] || { change: 0, changePercent: 0 };
+  const hasHoldings = (portfolio.holdings || []).length > 0;
+  const watchlistPreview = (portfolio.watchlist || []).slice(0, 3);
+  const bestPosition = useMemo(() => [...(portfolio.positions || [])].sort((a, b) => Number(b.rangeMetrics?.[selectedRange]?.changePercent || 0) - Number(a.rangeMetrics?.[selectedRange]?.changePercent || 0))[0] || null, [portfolio.positions, selectedRange]);
+  const weakestPosition = useMemo(() => [...(portfolio.positions || [])].sort((a, b) => Number(a.rangeMetrics?.[selectedRange]?.changePercent || 0) - Number(b.rangeMetrics?.[selectedRange]?.changePercent || 0))[0] || null, [portfolio.positions, selectedRange]);
+  const activeSeries = portfolio.summary?.rangeSeries?.[selectedRange] || [];
+  const rangeStart = Number(activeSeries[0]?.price || 0);
+  const rangeEnd = Number(activeSeries[activeSeries.length - 1]?.price || 0);
+  const rangeChange = rangeStart > 0 ? rangeEnd - rangeStart : Number(selectedRangeMetrics.change || 0);
+  const rangeChangePercent = rangeStart > 0 ? (rangeChange / rangeStart) * 100 : Number(selectedRangeMetrics.changePercent || 0);
+  const providerCopy = portfolio.providerStatus === "india_plan_upgrade_required"
+    ? "Indian discovery is active, but your Twelve Data fallback plan still cannot price some NSE flows."
+    : portfolio.providerStatus === "indian_api_error"
+      ? "Indian API is configured, but the latest equity response could not be read."
+      : portfolio.indianMarketConfigured
+        ? "Indian market data is active for equities and range history."
+        : portfolio.marketConfigured
+          ? "Fallback market data is active for commodity and non-Indian assets."
+          : "Add market API keys to enable live pricing.";
+
+  function updateRow(index, patch) {
+    setRows((current) => current.map((row, currentIndex) => currentIndex === index ? { ...row, ...patch } : row));
+  }
+
+  function addRow() {
+    setRows((current) => [...current, { symbol: "", name: "", shares: "", totalCost: "", exchange: "", currency: "INR" }]);
+  }
+
+  function removeRow(index) {
+    setRows((current) => current.length === 1 ? current : current.filter((_, currentIndex) => currentIndex !== index));
+  }
+
+  async function hydrateHolding(index, symbol) {
+    const clean = symbol.trim().toUpperCase();
+    if (!clean) return;
+    try {
+      const result = await api(`/api/market?mode=search&query=${encodeURIComponent(clean)}`);
+      const first = result.results?.[0];
+      if (!first) return;
+      updateRow(index, {
+        symbol: first.symbol,
+        name: rows[index]?.name || first.name,
+        exchange: first.exchange || "",
+        currency: first.currency || "INR",
+      });
+    } catch {
+      // manual entry is still allowed
+    }
+  }
+
+  async function savePortfolio(event) {
+    event.preventDefault();
+    setSaving(true);
+    setError("");
+    setNotice("");
+    try {
+      const holdings = rows
+        .map((row) => ({
+          symbol: row.symbol.trim().toUpperCase(),
+          name: row.name.trim(),
+          shares: Number(row.shares),
+          totalCost: parseMoneyInput(row.totalCost),
+          exchange: row.exchange?.trim() || "",
+          currency: row.currency?.trim().toUpperCase() || "INR",
+        }))
+        .filter((row) => row.symbol && row.name && row.shares > 0 && row.totalCost > 0);
+      if (!holdings.length) throw new Error("Add at least one complete holding before saving.");
+      await api("/api/investments", { method: "POST", body: JSON.stringify({ holdings }) });
+      setRows([{ symbol: "", name: "", shares: "", totalCost: "", exchange: "", currency: "INR" }]);
+      setNotice("Portfolio saved.");
+      await reloadPortfolio();
+    } catch (saveError) {
+      setError(saveError.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function removeHolding(id) {
+    setError("");
+    try {
+      await api("/api/investments", { method: "DELETE", body: JSON.stringify({ id }) });
+      await reloadPortfolio();
+    } catch (removeError) {
+      setError(removeError.message);
+    }
+  }
+
+  if (loading) {
+    return (
+      <div className="dashboard-page">
+        <section className="panel section shell-page">
+          <h2>Investments</h2>
+          <p className="hint">Loading portfolio data...</p>
+        </section>
+      </div>
+    );
+  }
+
+  return (
+    <div className="dashboard-page investments-page">
+      {!hasHoldings ? (
+        <section className="investment-setup-shell">
+          <div className="investment-setup investment-setup-redesign">
+            <div className="investment-copy">
+              <p className="eyebrow">Portfolio setup</p>
+              <h2>Build your investing workspace.</h2>
+              <p className="hint">Add each stock with its ticker, shares held, and total cost. Finova will price the portfolio in INR and build the portfolio chart from real market history.</p>
+              <p className="hint">{providerCopy}</p>
+              <div className="investment-preview-rail">
+                <div className="investment-preview-card main">
+                  <div className="investment-preview-head">
+                    <span>Market watch preview</span>
+                    <strong>{watchlistPreview.length ? "Live watchlist" : "Waiting for market data"}</strong>
+                  </div>
+                  <div className="investment-preview-commodities">
+                    {watchlistPreview.map((item) => (
+                      <div className="investment-preview-commodity" key={item.symbol}>
+                        <div>
+                          <strong>{item.label}</strong>
+                          <small>{item.ticker}</small>
+                        </div>
+                        <span className={item.todayChangePercent >= 0 ? "positive" : "negative"}>{formatSignedPercent(item.todayChangePercent)}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            </div>
+            <form className="investment-form investment-form-panel" onSubmit={savePortfolio}>
+              {rows.map((row, index) => (
+                <div className="holding-entry" key={`${row.symbol}-${index}`}>
+                  <div className="holding-entry-grid">
+                    <input
+                      placeholder="Ticker"
+                      value={row.symbol}
+                      onChange={(event) => updateRow(index, { symbol: event.target.value.toUpperCase() })}
+                      onBlur={() => hydrateHolding(index, row.symbol)}
+                    />
+                    <input placeholder="Company name" value={row.name} onChange={(event) => updateRow(index, { name: event.target.value })} />
+                    <input type="number" min="0.0001" step="0.0001" placeholder="Shares held" value={row.shares} onChange={(event) => updateRow(index, { shares: event.target.value })} />
+                    <input placeholder="Total cost" value={formatMoneyInput(row.totalCost)} inputMode="decimal" onChange={(event) => updateRow(index, { totalCost: formatMoneyInput(event.target.value) })} />
+                  </div>
+                  <div className="holding-entry-actions">
+                    <span className="hint">{row.exchange ? `${row.exchange} | ${row.currency}` : "Ticker lookup fills exchange and currency when provider search is available."}</span>
+                    {rows.length > 1 && <button type="button" className="btn secondary icon danger" onClick={() => removeRow(index)} title="Remove row"><Trash2 size={16} /></button>}
+                  </div>
+                </div>
+              ))}
+              <div className="investment-form-actions">
+                <button className="btn secondary" type="button" onClick={addRow}><Plus size={17} />Add another holding</button>
+                <button className="btn" type="submit" disabled={saving}>
+                  <Save size={17} />
+                  {saving ? "Saving..." : "Save portfolio"}
+                </button>
+              </div>
+              {notice && <div className="alert info"><Check size={18} /><span>{notice}</span></div>}
+              {error && <div className="alert risk"><AlertTriangle size={18} /><span>{error}</span></div>}
+            </form>
+          </div>
+        </section>
+      ) : (
+        <>
+          <section className="investment-hero-shell investment-hero-rebuilt">
+            <div className="investment-hero-main-card">
+              <div className="investment-hero-stack">
+                <div>
+                  <p className="eyebrow">Portfolio value</p>
+                  <h2>{formatMarketMoney(portfolio.summary?.currentValue || 0)}</h2>
+                  <p className="hint">Invested {formatMarketMoney(portfolio.summary?.totalInvested || 0)}</p>
+                </div>
+                <div className="investment-range-bar">
+                  {["1D", "5D", "1M", "3M", "ALL"].map((rangeKey) => (
+                    <button
+                      key={rangeKey}
+                      type="button"
+                      className={`range-chip ${selectedRange === rangeKey ? "active" : ""}`}
+                      onClick={() => setSelectedRange(rangeKey)}
+                    >
+                      {rangeKey}
+                    </button>
+                  ))}
+                </div>
+                <div className="investment-range-line">
+                  <PortfolioRangeChart points={activeSeries} accent={rangeChange >= 0 ? "#10B981" : "#EF4444"} height={104} strokeWidth={1.95} currency="INR" rangeKey={selectedRange} />
+                </div>
+                <div className={`investment-range-caption ${rangeChange >= 0 ? "positive" : "negative"}`}>
+                  <strong>{formatSignedMoney(rangeChange)}</strong>
+                  <span>{formatSignedPercent(rangeChangePercent)} over {selectedRange}</span>
+                </div>
+              </div>
+            </div>
+            <div className="investment-hero-sidecards">
+              <div className="investment-stat-card">
+                <span>Change</span>
+                <strong className={Number(selectedRangeMetrics.changePercent || 0) >= 0 ? "positive" : "negative"}>{formatSignedPercent(selectedRangeMetrics.changePercent || 0)}</strong>
+                <small>{portfolio.summary?.holdingCount || 0} holdings | {selectedRange} range</small>
+              </div>
+              <div className="investment-stat-card">
+                <span>Unrealized gain / loss</span>
+                <strong className={Number(selectedRangeMetrics.change || 0) >= 0 ? "positive" : "negative"}>{formatSignedMoney(selectedRangeMetrics.change || 0)}</strong>
+                <small>{providerCopy}</small>
+              </div>
+              <div className="investment-hero-mini-grid">
+                <div className="investment-stat-card compact">
+                  <span>Top mover</span>
+                  <strong>{bestPosition?.symbol || "--"}</strong>
+                  <small className={Number(bestPosition?.rangeMetrics?.[selectedRange]?.changePercent || 0) >= 0 ? "positive" : "negative"}>{bestPosition ? formatSignedPercent(bestPosition.rangeMetrics?.[selectedRange]?.changePercent || 0) : "No data"}</small>
+                </div>
+                <div className="investment-stat-card compact">
+                  <span>Needs attention</span>
+                  <strong>{weakestPosition?.symbol || "--"}</strong>
+                  <small className={Number(weakestPosition?.rangeMetrics?.[selectedRange]?.changePercent || 0) >= 0 ? "positive" : "negative"}>{weakestPosition ? formatSignedPercent(weakestPosition.rangeMetrics?.[selectedRange]?.changePercent || 0) : "No data"}</small>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <section className="investment-content-grid">
+            <section className="investment-holdings-shell">
+              <div className="section-heading">
+                <div>
+                  <h2>Stocks</h2>
+                  <p className="hint">Every holding with current value, cost basis, and the live day trend.</p>
+                </div>
+              </div>
+              <div className="investment-holdings-list">
+                {portfolio.positions.map((position) => (
+                  <article className="investment-row" key={position.id}>
+                    <div className="investment-row-main">
+                      <div className="investment-row-ident">
+                        <div className="investment-symbol-chip">{position.symbol.slice(0, 2)}</div>
+                        <div>
+                          <strong>{position.name}</strong>
+                          <p className="hint">{position.symbol} | {position.shares} shares</p>
+                        </div>
+                      </div>
+                      <div className="investment-row-figures">
+                        <span>{formatMarketMoney(position.currentPrice, position.currency)}</span>
+                        <strong>{formatMarketMoney(position.currentValue, position.currency)}</strong>
+                      </div>
+                    </div>
+                    <div className="investment-row-chart">
+                      <TrendLine points={position.chart} accent={position.todayChange >= 0 ? "#10B981" : "#EF4444"} height={24} strokeWidth={1.2} />
+                    </div>
+                    <div className="investment-row-meta">
+                      <span>Invested {formatMarketMoney(position.totalCost, position.currency)}</span>
+                      <span>Prev. Close {formatMarketMoney(position.previousClose, position.currency)}</span>
+                      <span className={position.todayChange >= 0 ? "positive" : "negative"}>Today {formatSignedPercent(position.todayChangePercent)}</span>
+                      <span className={position.unrealizedGain >= 0 ? "positive" : "negative"}>{formatSignedMoney(position.unrealizedGain, position.currency)}</span>
+                      <button className="btn secondary icon danger" type="button" title="Delete holding" onClick={() => removeHolding(position.id)}><Trash2 size={16} /></button>
+                    </div>
+                  </article>
+                ))}
+              </div>
+            </section>
+
+            <aside className="investment-watchlist-shell investment-watchlist-side">
+              <div className="section-heading">
+                <div>
+                  <h2>Watchlist</h2>
+                  <p className="hint">Ten live names across Indian equities and market anchors.</p>
+                </div>
+              </div>
+              <div className="commodity-watchlist robinhood-watchlist">
+                {(portfolio.watchlist || []).map((item) => (
+                  <article className="commodity-row commodity-card watchlist-row" key={item.symbol}>
+                    <div className="investment-row-ident">
+                      <div className="investment-symbol-chip commodity" style={{ color: item.accent, borderColor: `${item.accent}40`, background: `${item.accent}15` }}>{item.ticker.slice(0, 2)}</div>
+                      <div>
+                        <strong>{item.label}</strong>
+                        <p className="hint">{item.ticker}</p>
+                      </div>
+                    </div>
+                    <div className="watchlist-row-prices">
+                      <span>Prev. Close {formatMarketMoney(item.previousPrice, item.currency)}</span>
+                      <strong>{formatMarketMoney(item.currentPrice, item.currency)}</strong>
+                      <small className={item.todayChangePercent >= 0 ? "positive" : "negative"}>{formatSignedPercent(item.todayChangePercent)}</small>
+                    </div>
+                  </article>
+                ))}
+              </div>
+            </aside>
+          </section>
+
+          <section className="investment-content-grid lower">
+            <section className="investment-form investment-form-panel">
+              <div className="section-heading">
+                <div>
+                  <h2>Add Holdings</h2>
+                  <p className="hint">Add more Indian stocks or funds and Finova will fold them into the main chart immediately.</p>
+                </div>
+              </div>
+              <form onSubmit={savePortfolio}>
+                {rows.map((row, index) => (
+                  <div className="holding-entry" key={`${row.symbol}-${index}`}>
+                    <div className="holding-entry-grid">
+                      <input placeholder="Ticker" value={row.symbol} onChange={(event) => updateRow(index, { symbol: event.target.value.toUpperCase() })} onBlur={() => hydrateHolding(index, row.symbol)} />
+                      <input placeholder="Company name" value={row.name} onChange={(event) => updateRow(index, { name: event.target.value })} />
+                      <input type="number" min="0.0001" step="0.0001" placeholder="Shares held" value={row.shares} onChange={(event) => updateRow(index, { shares: event.target.value })} />
+                      <input placeholder="Total cost" value={formatMoneyInput(row.totalCost)} inputMode="decimal" onChange={(event) => updateRow(index, { totalCost: formatMoneyInput(event.target.value) })} />
+                    </div>
+                    <div className="holding-entry-actions">
+                      <span className="hint">{row.exchange ? `${row.exchange} | ${row.currency}` : "Ticker lookup fills name and exchange when market search is available."}</span>
+                      {rows.length > 1 && <button type="button" className="btn secondary icon danger" onClick={() => removeRow(index)} title="Remove row"><Trash2 size={16} /></button>}
+                    </div>
+                  </div>
+                ))}
+                <div className="investment-form-actions">
+                  <button className="btn secondary" type="button" onClick={addRow}><Plus size={17} />Add another row</button>
+                  <button className="btn" type="submit" disabled={saving}>
+                    <Save size={17} />
+                    {saving ? "Saving..." : "Add to portfolio"}
+                  </button>
+                </div>
+                {notice && <div className="alert info"><Check size={18} /><span>{notice}</span></div>}
+                {error && <div className="alert risk"><AlertTriangle size={18} /><span>{error}</span></div>}
+              </form>
+            </section>
+
+            <section className="panel section investment-insights-shell">
+              <div className="recommendations investment-insight-list">
+                {insightsLoading ? (
+                  <div className="recommendation low">
+                    <strong>Loading insights</strong>
+                    <p className="hint">Gemini is generating fresh portfolio takeaways.</p>
+                  </div>
+                ) : insightsError ? (
+                  <div className="recommendation low">
+                    <strong>Insights unavailable</strong>
+                    <p className="hint">{insightsError}</p>
+                  </div>
+                ) : investmentInsights.length ? investmentInsights.map((insight, index) => (
+                  <div className="recommendation low" key={`${insight.title}-${index}`}>
+                    <strong>{insight.title}</strong>
+                    <p className="hint">{insight.body}</p>
+                  </div>
+                )) : (
+                  <div className="recommendation low">
+                    <strong>No insights yet</strong>
+                    <p className="hint">Add more priced holdings to generate portfolio commentary.</p>
+                  </div>
+                )}
+              </div>
+            </section>
+          </section>
+        </>
+      )}
     </div>
   );
 });
@@ -1326,7 +3415,21 @@ const ProblemCategories = memo(function ProblemCategories({ ranking }) {
   );
 });
 
-const RecommendationsPanel = memo(function RecommendationsPanel({ recommendations }) {
+const RecommendationsPanel = memo(function RecommendationsPanel({ recommendations, variant = "default" }) {
+  if (variant === "ai") {
+    return (
+      <section className="panel section ai-panel">
+        <div className="ai-icon"><Sparkles size={22} /></div>
+        <div>
+          <h2>AI Insights</h2>
+          <ul className="ai-bullet-list">
+            {recommendations.map((rec) => <li key={rec.id}>{rec.title}: {rec.body}</li>)}
+          </ul>
+        </div>
+      </section>
+    );
+  }
+
   return (
     <div className="panel section">
       <h2>Recommendations</h2>
@@ -1342,6 +3445,26 @@ const RecommendationsPanel = memo(function RecommendationsPanel({ recommendation
   );
 });
 
+const AIInsightsPanel = memo(function AIInsightsPanel({ insights = [], loading = false, error = "" }) {
+  return (
+    <section className="panel section ai-panel">
+      <div className="ai-icon"><Sparkles size={22} /></div>
+      <div>
+        <h2>AI Insights</h2>
+        {loading ? (
+          <p className="hint">Generating fresh goal insights...</p>
+        ) : error ? (
+          <p className="hint">{error}</p>
+        ) : (
+          <ul className="ai-bullet-list">
+            {insights.map((insight, index) => <li key={`${index}-${insight}`}>{insight}</li>)}
+          </ul>
+        )}
+      </div>
+    </section>
+  );
+});
+
 const MetalInsights = memo(function MetalInsights({ metals }) {
   return (
     <div className="panel section">
@@ -1350,7 +3473,7 @@ const MetalInsights = memo(function MetalInsights({ metals }) {
         <div className="metal-row" key={metal.type}>
           <div>
             <strong>{metal.type}</strong>
-            <div className="hint">Today INR {metal.today} | Yesterday INR {metal.yesterday}</div>
+            <div className="hint">Today INR {metal.today} | Prev. Close INR {metal.yesterday}</div>
           </div>
           <div className="row-title">
             {metal.change >= 0 ? <TrendingUp size={17} /> : <TrendingDown size={17} />}
@@ -1363,12 +3486,14 @@ const MetalInsights = memo(function MetalInsights({ metals }) {
   );
 });
 
-const HabitCalendar = memo(function HabitCalendar({ habits, transactions, emiReminders, selectedDate, onSelectDate }) {
+const HabitCalendar = memo(function HabitCalendar({ habits, transactions, emiReminders, selectedDate, visibleMonth = "", onSelectDate, onVisibleMonthChange = null }) {
   const { cells, monthLabel } = useMemo(() => {
-    const current = new Date(`${selectedDate}T12:00:00`);
+    const current = visibleMonth
+      ? new Date(`${visibleMonth}-01T12:00:00+05:30`)
+      : new Date(`${selectedDate}T12:00:00+05:30`);
     const year = current.getFullYear();
     const month = current.getMonth();
-    const todayKey = new Date().toISOString().slice(0, 10);
+    const todayKey = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Kolkata", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
     const firstDay = new Date(year, month, 1);
     const daysInMonth = new Date(year, month + 1, 0).getDate();
     const leadingBlanks = firstDay.getDay();
@@ -1393,11 +3518,19 @@ const HabitCalendar = memo(function HabitCalendar({ habits, transactions, emiRem
     ];
 
     return {
-      today: current,
       cells,
-      monthLabel: current.toLocaleString("en", { month: "long", year: "numeric" }),
+      monthLabel: current.toLocaleString("en-IN", { month: "long", year: "numeric", timeZone: "Asia/Kolkata" }),
+      monthKey: monthKeyFromDate(current),
     };
-  }, [emiReminders, habits, selectedDate, transactions]);
+  }, [emiReminders, habits, selectedDate, transactions, visibleMonth]);
+
+  function shiftMonth(offset) {
+    const base = visibleMonth
+      ? new Date(`${visibleMonth}-01T12:00:00+05:30`)
+      : new Date(`${selectedDate}T12:00:00+05:30`);
+    const next = new Date(base.getFullYear(), base.getMonth() + offset, 1, 12);
+    onVisibleMonthChange?.(monthKeyFromDate(next));
+  }
 
   return (
     <div className="panel section calendar-panel">
@@ -1406,9 +3539,19 @@ const HabitCalendar = memo(function HabitCalendar({ habits, transactions, emiRem
           <h2>Calendar</h2>
           <p className="hint">{monthLabel}</p>
         </div>
-        <div className="date-picker-wrap">
+        <div className="calendar-toolbar">
+          <div className="calendar-nav">
+            <button className="btn secondary icon" type="button" onClick={() => shiftMonth(-1)} title="Previous month">
+              <span aria-hidden="true">‹</span>
+            </button>
+            <button className="btn secondary icon" type="button" onClick={() => shiftMonth(1)} title="Next month">
+              <span aria-hidden="true">›</span>
+            </button>
+          </div>
+          <div className="date-picker-wrap">
           <CalendarDays size={20} />
           <input type="date" value={selectedDate} onChange={(event) => onSelectDate(event.target.value)} />
+        </div>
         </div>
       </div>
       <div className="calendar-weekdays">
@@ -1469,25 +3612,53 @@ const DailyTransactions = memo(function DailyTransactions({ selectedDate, transa
   );
 });
 
-const EditableTransaction = memo(function EditableTransaction({ transaction, categories = [], onDone }) {
+const EditableTransaction = memo(function EditableTransaction({ transaction, categories = [], goals = [], onDone }) {
+  const initialCategoryType = transaction.goalId ? goalCategoryType(transaction.goalId) : transaction.categoryType;
   const [editing, setEditing] = useState(false);
   const [form, setForm] = useState({
-    categoryType: transaction.categoryType,
+    categoryType: initialCategoryType,
     amount: String(transaction.amount),
     note: transaction.note || "",
   });
   const [error, setError] = useState("");
+  const [noteTouched, setNoteTouched] = useState(Boolean(transaction.note));
 
   useEffect(() => {
-    setForm({ categoryType: transaction.categoryType, amount: String(transaction.amount), note: transaction.note || "" });
+    const nextCategoryType = transaction.goalId ? goalCategoryType(transaction.goalId) : transaction.categoryType;
+    setForm({ categoryType: nextCategoryType, amount: String(transaction.amount), note: transaction.note || "" });
+    setNoteTouched(Boolean(transaction.note));
   }, [transaction]);
+
+  useEffect(() => {
+    const goal = findGoalByCategoryType(goals, form.categoryType);
+    if (!goal || noteTouched) return;
+    setForm((current) => ({ ...current, note: `saved towards ${goal.name}` }));
+  }, [form.categoryType, goals, noteTouched]);
+
+  function handleCategoryChange(nextCategoryType) {
+    const selectedGoal = findGoalByCategoryType(goals, nextCategoryType);
+    const previousGoal = findGoalByCategoryType(goals, form.categoryType);
+    const previousAutoNote = previousGoal ? `saved towards ${previousGoal.name}` : "";
+    const nextAutoNote = selectedGoal ? `saved towards ${selectedGoal.name}` : "";
+    const nextNote = !noteTouched && (form.note === previousAutoNote || !form.note)
+      ? nextAutoNote
+      : form.note;
+    setForm((current) => ({ ...current, categoryType: nextCategoryType, note: nextNote }));
+  }
 
   async function save() {
     setError("");
+    const selectedGoal = findGoalByCategoryType(goals, form.categoryType);
     try {
       await api("/api/transactions", {
         method: "PATCH",
-        body: JSON.stringify({ id: transaction.id, ...form, amount: Number(form.amount) }),
+        body: JSON.stringify({
+          id: transaction.id,
+          categoryType: form.categoryType,
+          goalId: selectedGoal?.id || "",
+          amount: parseMoneyInput(form.amount),
+          note: form.note,
+        }),
       });
       setEditing(false);
       onDone();
@@ -1516,18 +3687,31 @@ const EditableTransaction = memo(function EditableTransaction({ transaction, cat
           <div className="grid-2 compact">
             <div className="field">
               <label>Category</label>
-              <select value={form.categoryType} onChange={(event) => setForm({ ...form, categoryType: event.target.value })}>
-                {[...categories.map((category) => [category.type, category.label]), ["credit", "Credit"]].map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+              <select value={form.categoryType} onChange={(event) => handleCategoryChange(event.target.value)}>
+                <optgroup label="Budget Categories">
+                  {categories.map((category) => <option key={category.type} value={category.type}>{category.label}</option>)}
+                </optgroup>
+                {goals.length > 0 && (
+                  <optgroup label="Goals">
+                    {goals.map((goal) => <option key={goal.id} value={goalCategoryType(goal.id)}>{goal.name}</option>)}
+                  </optgroup>
+                )}
+                <optgroup label="Income">
+                  <option value="credit">Credit</option>
+                </optgroup>
               </select>
             </div>
             <div className="field">
               <label>Amount</label>
-              <input type="number" min="1" value={form.amount} onChange={(event) => setForm({ ...form, amount: event.target.value })} />
+              <input value={formatMoneyInput(form.amount)} inputMode="decimal" onChange={(event) => setForm({ ...form, amount: formatMoneyInput(event.target.value) })} />
             </div>
           </div>
           <div className="field">
             <label>Note</label>
-            <input value={form.note} onChange={(event) => setForm({ ...form, note: event.target.value })} />
+            <input value={form.note} onChange={(event) => {
+              setNoteTouched(true);
+              setForm({ ...form, note: event.target.value });
+            }} />
           </div>
           {error && <div className="alert risk"><AlertTriangle size={18} /><span>{error}</span></div>}
           <div className="row-actions">
@@ -1538,7 +3722,7 @@ const EditableTransaction = memo(function EditableTransaction({ transaction, cat
       ) : (
         <>
           <div>
-            <strong>{categories.find((category) => category.type === transaction.categoryType)?.label || categoryLabels[transaction.categoryType] || transaction.categoryType}</strong>
+            <strong>{categoryLabelForTransaction(transaction, categories, goals)}</strong>
             <div className="hint">{transaction.note || "No note"}</div>
           </div>
           <div className="transaction-row-side">
@@ -1679,7 +3863,7 @@ function LegacyDashboard({ summary, onDone }) {
             <div className="metal-row" key={metal.type}>
               <div>
                 <strong>{metal.type}</strong>
-                <div className="hint">Today ₹{metal.today} • Yesterday ₹{metal.yesterday}</div>
+                <div className="hint">Today ₹{metal.today} • Prev. Close ₹{metal.yesterday}</div>
               </div>
               <div className="row-title">
                 {metal.change >= 0 ? <TrendingUp size={17} /> : <TrendingDown size={17} />}
@@ -1696,11 +3880,12 @@ function LegacyDashboard({ summary, onDone }) {
 
 */
 
-const Metric = memo(function Metric({ icon, label, value }) {
+const Metric = memo(function Metric({ icon, label, value, hint = "", valueClassName = "" }) {
   return (
     <div className="panel metric">
       <div className="row-title">{icon}<span>{label}</span></div>
-      <div className="metric-value">{value}</div>
+      <div className={`metric-value ${valueClassName}`.trim()}>{value}</div>
+      {hint ? <div className="hint">{hint}</div> : null}
     </div>
   );
 });
@@ -1736,20 +3921,55 @@ function StatusBadge({ status }) {
   return <span className={`badge status ${status}`}>{icon}{label}</span>;
 }
 
-const TransactionForm = memo(function TransactionForm({ categories = [], selectedDate = "", onDone }) {
-  const [form, setForm] = useState({ categoryType: "essentials", amount: "", note: "", date: selectedDate || new Date().toISOString().slice(0, 10) });
+const TransactionForm = memo(function TransactionForm({ categories = [], goals = [], selectedDate = "", onDone }) {
+  const categoryOptions = useMemo(() => buildTransactionCategories(categories, goals), [categories, goals]);
+  const defaultCategoryType = categoryOptions[0]?.type || "essentials";
+  const [form, setForm] = useState({ categoryType: defaultCategoryType, amount: "", note: "", date: selectedDate || new Date().toISOString().slice(0, 10) });
   const [error, setError] = useState("");
+  const [noteTouched, setNoteTouched] = useState(false);
+
+  useEffect(() => {
+    if (!categoryOptions.some((category) => category.type === form.categoryType)) {
+      setForm((current) => ({ ...current, categoryType: defaultCategoryType }));
+    }
+  }, [categoryOptions, defaultCategoryType, form.categoryType]);
 
   useEffect(() => {
     if (selectedDate) setForm((current) => ({ ...current, date: selectedDate }));
   }, [selectedDate]);
 
+  useEffect(() => {
+    const goal = findGoalByCategoryType(goals, form.categoryType);
+    if (!goal || noteTouched) return;
+    setForm((current) => ({ ...current, note: `saved towards ${goal.name}` }));
+  }, [form.categoryType, goals, noteTouched]);
+
+  function handleCategoryChange(nextCategoryType) {
+    const selectedGoal = findGoalByCategoryType(goals, nextCategoryType);
+    const previousGoal = findGoalByCategoryType(goals, form.categoryType);
+    const previousAutoNote = previousGoal ? `saved towards ${previousGoal.name}` : "";
+    const nextAutoNote = selectedGoal ? `saved towards ${selectedGoal.name}` : "";
+    const nextNote = !noteTouched && (form.note === previousAutoNote || !form.note)
+      ? nextAutoNote
+      : form.note;
+    setForm((current) => ({ ...current, categoryType: nextCategoryType, note: nextNote }));
+  }
+
   async function submit(event) {
     event.preventDefault();
     setError("");
+    const selectedGoal = findGoalByCategoryType(goals, form.categoryType);
     try {
-      await api("/api/transactions", { method: "POST", body: JSON.stringify({ ...form, amount: Number(form.amount) }) });
-      setForm({ ...form, amount: "", note: "" });
+      await api("/api/transactions", {
+        method: "POST",
+        body: JSON.stringify({
+          ...form,
+          goalId: selectedGoal?.id || "",
+          amount: parseMoneyInput(form.amount),
+        }),
+      });
+      setForm((current) => ({ ...current, amount: "", note: "", categoryType: defaultCategoryType }));
+      setNoteTouched(false);
       onDone();
     } catch (err) {
       setError(err.message);
@@ -1762,16 +3982,25 @@ const TransactionForm = memo(function TransactionForm({ categories = [], selecte
       <form className="form" onSubmit={submit}>
         <div className="field">
           <label>Category</label>
-          <select value={form.categoryType} onChange={(event) => setForm({ ...form, categoryType: event.target.value })}>
-            {(categories.length ? categories : Object.entries(categoryLabels).filter(([value]) => value !== "credit").map(([type, label]) => ({ type, label }))).map((category) => (
-              <option key={category.type} value={category.type}>{category.label}</option>
-            ))}
-            <option value="credit">Credit</option>
+          <select value={form.categoryType} onChange={(event) => handleCategoryChange(event.target.value)}>
+            <optgroup label="Budget Categories">
+              {(categories.length ? categories : Object.entries(categoryLabels).filter(([value]) => value !== "credit").map(([type, label]) => ({ type, label }))).map((category) => (
+                <option key={category.type} value={category.type}>{category.label}</option>
+              ))}
+            </optgroup>
+            {goals.length > 0 && (
+              <optgroup label="Goals">
+                {goals.map((goal) => <option key={goal.id} value={goalCategoryType(goal.id)}>{goal.name}</option>)}
+              </optgroup>
+            )}
+            <optgroup label="Income">
+              <option value="credit">Credit</option>
+            </optgroup>
           </select>
         </div>
         <div className="field">
           <label>Amount</label>
-          <input type="number" min="1" value={form.amount} onChange={(event) => setForm({ ...form, amount: event.target.value })} required />
+          <input value={formatMoneyInput(form.amount)} inputMode="decimal" onChange={(event) => setForm({ ...form, amount: formatMoneyInput(event.target.value) })} required />
         </div>
         <div className="field">
           <label>Date</label>
@@ -1779,7 +4008,10 @@ const TransactionForm = memo(function TransactionForm({ categories = [], selecte
         </div>
         <div className="field">
           <label>Note</label>
-          <input value={form.note} onChange={(event) => setForm({ ...form, note: event.target.value })} placeholder="Groceries, EMI, savings transfer..." />
+          <input value={form.note} onChange={(event) => {
+            setNoteTouched(true);
+            setForm({ ...form, note: event.target.value });
+          }} placeholder="Groceries, EMI, savings transfer..." />
         </div>
         {error && <div className="alert risk">{error}</div>}
         <button className="btn" type="submit">
@@ -1842,6 +4074,8 @@ const SettingsPage = memo(function SettingsPage({ user, profile, income, onDone 
   const [showPassword, setShowPassword] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [setupResetting, setSetupResetting] = useState(false);
+  const [loadingDemo, setLoadingDemo] = useState(false);
+  const [clearingData, setClearingData] = useState(false);
   const [deletingAccount, setDeletingAccount] = useState(false);
 
   useEffect(() => {
@@ -1865,7 +4099,7 @@ const SettingsPage = memo(function SettingsPage({ user, profile, income, onDone 
         email: form.email.trim() === user?.email ? "" : form.email.trim(),
         password: form.password,
         incomePeriod: form.incomePeriod,
-        incomeAmount: Number(form.incomeAmount),
+        incomeAmount: parseMoneyInput(form.incomeAmount),
       };
       const result = await api("/api/profile", { method: "PATCH", body: JSON.stringify(payload) });
       setMessage(result.message);
@@ -1879,18 +4113,53 @@ const SettingsPage = memo(function SettingsPage({ user, profile, income, onDone 
   }
 
   async function resetSetup() {
-    if (!window.confirm("Run setup again? Your current profile, income, budget plan, and debt setup will be cleared.")) return;
+    if (!window.confirm("Run setup again? This reopens onboarding for your profile, income, budget, debt, and savings setup while keeping your transactions, goals, habits, investments, and assistant history.")) return;
     setError("");
     setMessage("");
     setSetupResetting(true);
     try {
-      const result = await api("/api/profile/reset-setup", { method: "POST" });
+      clearPortfolioSessionCache();
+      const result = await api("/api/profile/restart-setup", { method: "POST" });
       setMessage(result.message);
       await onDone();
     } catch (err) {
       setError(err.message);
     } finally {
       setSetupResetting(false);
+    }
+  }
+
+  async function clearData() {
+    if (!window.confirm("Clear all data and start over? This wipes every saved Finova record for this account and sends you back to setup.")) return;
+    setError("");
+    setMessage("");
+    setClearingData(true);
+    try {
+      clearPortfolioSessionCache();
+      const result = await api("/api/profile/reset-setup", { method: "POST" });
+      setMessage(result.message);
+      await onDone();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setClearingData(false);
+    }
+  }
+
+  async function loadDemoProfile() {
+    if (!window.confirm("Replace the current account data with the Maggi demo profile? This clears the existing account data and loads the full demo dataset.")) return;
+    setError("");
+    setMessage("");
+    setLoadingDemo(true);
+    try {
+      clearPortfolioSessionCache();
+      const result = await api("/api/profile/demo-profile", { method: "POST" });
+      setMessage(result.message);
+      await onDone();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoadingDemo(false);
     }
   }
 
@@ -1937,7 +4206,7 @@ const SettingsPage = memo(function SettingsPage({ user, profile, income, onDone 
                 <option value="monthly">Monthly</option>
                 <option value="annual">Annual</option>
               </select>
-              <input type="number" min="1" value={form.incomeAmount} onChange={(event) => setForm({ ...form, incomeAmount: event.target.value })} required />
+              <input value={formatMoneyInput(form.incomeAmount)} inputMode="decimal" onChange={(event) => setForm({ ...form, incomeAmount: formatMoneyInput(event.target.value) })} required />
             </div>
           </div>
           <div className="field">
@@ -1961,16 +4230,24 @@ const SettingsPage = memo(function SettingsPage({ user, profile, income, onDone 
         <div className="section-heading">
           <div>
             <h2>Account Actions</h2>
-            <p className="hint">Restart setup or permanently remove this account.</p>
+            <p className="hint">Restart onboarding, wipe app data, or permanently remove this account.</p>
           </div>
           <AlertTriangle size={20} />
         </div>
         <div className="settings-actions">
-          <button className="btn secondary" type="button" onClick={resetSetup} disabled={setupResetting || deletingAccount}>
+          <button className="btn secondary" type="button" onClick={resetSetup} disabled={setupResetting || loadingDemo || clearingData || deletingAccount}>
             <RefreshCcw size={17} />
             {setupResetting ? "Resetting..." : "Run setup again"}
           </button>
-          <button className="btn secondary danger" type="button" onClick={deleteAccount} disabled={setupResetting || deletingAccount}>
+          <button className="btn secondary" type="button" onClick={loadDemoProfile} disabled={setupResetting || loadingDemo || clearingData || deletingAccount}>
+            <Sparkles size={17} />
+            {loadingDemo ? "Loading demo..." : "Load demo profile"}
+          </button>
+          <button className="btn secondary danger" type="button" onClick={clearData} disabled={setupResetting || loadingDemo || clearingData || deletingAccount}>
+            <Trash2 size={17} />
+            {clearingData ? "Clearing..." : "Clear data"}
+          </button>
+          <button className="btn secondary danger" type="button" onClick={deleteAccount} disabled={setupResetting || loadingDemo || clearingData || deletingAccount}>
             <Trash2 size={17} />
             {deletingAccount ? "Deleting..." : "Delete account"}
           </button>

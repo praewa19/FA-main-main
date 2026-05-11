@@ -1,5 +1,4 @@
 import { createSupabaseServerClient, getCurrentUser, requireVerified } from "@/lib/auth";
-import { invalidateCachedMarketSnapshot } from "@/lib/market-session-cache";
 
 export async function POST() {
   const current = await getCurrentUser();
@@ -7,26 +6,24 @@ export async function POST() {
   if (authError) return authError;
 
   const supabase = await createSupabaseServerClient();
-  invalidateCachedMarketSnapshot(current.id);
   const tables = [
-    "habit_logs",
-    "assistant_conversations",
-    "transactions",
-    "investment_holdings",
-    "custom_habits",
-    "habits",
     "savings_targets",
-    "goals",
     "debt_obligations",
     "categories",
     "budget_plans",
     "incomes",
     "profiles",
   ];
+
   for (const table of tables) {
     const { error } = await supabase.from(table).delete().eq("user_id", current.id);
-    if (error && !["42P01", "PGRST205"].includes(error.code)) return Response.json({ error: error.message }, { status: 400 });
+    if (error && !["42P01", "PGRST205"].includes(error.code)) {
+      return Response.json({ error: error.message }, { status: 400 });
+    }
   }
 
-  return Response.json({ ok: true, message: "Setup reset. All prior Finova data was cleared so onboarding starts fresh." });
+  return Response.json({
+    ok: true,
+    message: "Setup reopened. Existing transactions, goals, habits, investments, and chat history were kept.",
+  });
 }

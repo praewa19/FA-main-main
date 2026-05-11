@@ -43,6 +43,7 @@ create table if not exists public.transactions (
   id text primary key,
   user_id uuid not null references auth.users(id) on delete cascade,
   category_type text not null,
+  goal_id text references public.goals(id) on delete set null,
   amount numeric not null,
   note text,
   date date not null default current_date,
@@ -51,6 +52,8 @@ create table if not exists public.transactions (
 );
 
 alter table public.transactions drop constraint if exists transactions_category_type_check;
+
+create index if not exists transactions_user_goal_idx on public.transactions (user_id, goal_id);
 
 create table if not exists public.habits (
   id text primary key,
@@ -108,12 +111,48 @@ create table if not exists public.custom_habits (
   name text not null,
   description text not null default '',
   icon text not null default '*',
+  cadence text not null default 'daily',
   target_days integer not null default 30,
   completed_today boolean not null default false,
   streak integer not null default 0,
   best_streak integer not null default 0,
   created_at timestamptz not null default now(),
   updated_at timestamptz
+);
+
+create table if not exists public.habit_logs (
+  id text primary key,
+  user_id uuid not null references auth.users(id) on delete cascade,
+  habit_id text not null references public.custom_habits(id) on delete cascade,
+  log_date date not null,
+  completed boolean not null default true,
+  created_at timestamptz not null default now(),
+  unique (user_id, habit_id, log_date)
+);
+
+create table if not exists public.investment_holdings (
+  id text primary key,
+  user_id uuid not null references auth.users(id) on delete cascade,
+  symbol text not null,
+  name text not null,
+  shares numeric not null default 0,
+  total_cost numeric not null default 0,
+  asset_type text not null default 'stock',
+  exchange text,
+  currency text not null default 'USD',
+  created_at timestamptz not null default now(),
+  updated_at timestamptz,
+  unique (user_id, symbol)
+);
+
+create table if not exists public.assistant_conversations (
+  id text primary key,
+  user_id uuid not null references auth.users(id) on delete cascade,
+  title text not null,
+  source_page text not null default 'assistant',
+  messages jsonb not null default '[]'::jsonb,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
 );
 
 alter table public.profiles enable row level security;
@@ -126,6 +165,9 @@ alter table public.debt_obligations enable row level security;
 alter table public.goals enable row level security;
 alter table public.savings_targets enable row level security;
 alter table public.custom_habits enable row level security;
+alter table public.habit_logs enable row level security;
+alter table public.investment_holdings enable row level security;
+alter table public.assistant_conversations enable row level security;
 
 create policy "Users manage own profiles" on public.profiles for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
 create policy "Users manage own incomes" on public.incomes for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
@@ -137,3 +179,6 @@ create policy "Users manage own debts" on public.debt_obligations for all using 
 create policy "Users manage own goals" on public.goals for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
 create policy "Users manage own savings targets" on public.savings_targets for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
 create policy "Users manage own custom habits" on public.custom_habits for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
+create policy "Users manage own habit logs" on public.habit_logs for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
+create policy "Users manage own investment holdings" on public.investment_holdings for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
+create policy "Users manage own assistant conversations" on public.assistant_conversations for all using (auth.uid() = user_id) with check (auth.uid() = user_id);

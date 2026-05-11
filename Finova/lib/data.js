@@ -108,6 +108,7 @@ export function toTransaction(row) {
     id: row.id,
     userId: row.user_id,
     categoryType: row.category_type,
+    goalId: row.goal_id || "",
     amount: row.amount,
     note: row.note || "",
     date: row.date,
@@ -121,6 +122,7 @@ export function fromTransaction(transaction) {
     id: transaction.id,
     user_id: transaction.userId,
     category_type: transaction.categoryType,
+    goal_id: transaction.goalId || null,
     amount: transaction.amount,
     note: transaction.note || "",
     date: transaction.date,
@@ -197,10 +199,12 @@ export function toCustomHabit(row) {
     name: row.name,
     description: row.description,
     icon: row.icon,
+    cadence: row.cadence || "daily",
     targetDays: row.target_days,
     completedToday: row.completed_today,
     streak: row.streak,
     bestStreak: row.best_streak,
+    logs: Array.isArray(row.logs) ? row.logs : [],
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -213,12 +217,36 @@ export function fromCustomHabit(habit) {
     name: habit.name,
     description: habit.description,
     icon: habit.icon,
+    cadence: habit.cadence || "daily",
     target_days: habit.targetDays,
     completed_today: habit.completedToday,
     streak: habit.streak,
     best_streak: habit.bestStreak,
     created_at: habit.createdAt,
     updated_at: habit.updatedAt,
+  };
+}
+
+export function toHabitLog(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    userId: row.user_id,
+    habitId: row.habit_id,
+    logDate: row.log_date,
+    completed: row.completed,
+    createdAt: row.created_at,
+  };
+}
+
+export function fromHabitLog(log) {
+  return {
+    id: log.id,
+    user_id: log.userId,
+    habit_id: log.habitId,
+    log_date: log.logDate,
+    completed: log.completed,
+    created_at: log.createdAt,
   };
 }
 
@@ -278,6 +306,79 @@ export function fromDebtObligation(debt) {
     created_at: debt.createdAt,
     updated_at: debt.updatedAt,
   };
+}
+
+export function toInvestmentHolding(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    userId: row.user_id,
+    symbol: row.symbol,
+    name: row.name,
+    shares: row.shares,
+    totalCost: row.total_cost,
+    assetType: row.asset_type,
+    exchange: row.exchange,
+    currency: row.currency,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+export function fromInvestmentHolding(holding) {
+  return {
+    id: holding.id,
+    user_id: holding.userId,
+    symbol: holding.symbol,
+    name: holding.name,
+    shares: holding.shares,
+    total_cost: holding.totalCost,
+    asset_type: holding.assetType,
+    exchange: holding.exchange,
+    currency: holding.currency,
+    created_at: holding.createdAt,
+    updated_at: holding.updatedAt,
+  };
+}
+
+export function toAssistantConversation(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    userId: row.user_id,
+    title: row.title,
+    sourcePage: row.source_page,
+    messages: Array.isArray(row.messages) ? row.messages : [],
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+export function fromAssistantConversation(conversation) {
+  return {
+    id: conversation.id,
+    user_id: conversation.userId,
+    title: conversation.title,
+    source_page: conversation.sourcePage,
+    messages: conversation.messages || [],
+    created_at: conversation.createdAt,
+    updated_at: conversation.updatedAt,
+  };
+}
+
+export async function fetchAllRows(queryFactory, pageSize = 1000) {
+  const rows = [];
+
+  for (let start = 0; ; start += pageSize) {
+    const end = start + pageSize - 1;
+    const { data, error } = await queryFactory().range(start, end);
+    if (error) throw error;
+    const batch = data || [];
+    rows.push(...batch);
+    if (batch.length < pageSize) break;
+  }
+
+  return rows;
 }
 
 export async function getSessionData(userId) {

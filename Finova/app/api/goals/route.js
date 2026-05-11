@@ -77,6 +77,16 @@ export async function DELETE(request) {
   const parsed = z.object({ id: z.string().min(1) }).safeParse(await request.json());
   if (!parsed.success) return Response.json({ error: "Choose a goal to delete." }, { status: 400 });
   const supabase = await createSupabaseServerClient();
+  const { error: unlinkError } = await supabase
+    .from("transactions")
+    .update({
+      goal_id: null,
+      category_type: "savings",
+      updated_at: nowIso(),
+    })
+    .eq("user_id", current.id)
+    .eq("goal_id", parsed.data.id);
+  if (unlinkError && !isMissingTable(unlinkError)) return Response.json({ error: unlinkError.message }, { status: 400 });
   const { error } = await supabase.from("goals").delete().eq("id", parsed.data.id).eq("user_id", current.id);
   if (isMissingTable(error)) return Response.json({ error: "Goals storage is not ready. Run Finova/supabase/schema.sql in Supabase, then refresh the schema cache." }, { status: 503 });
   if (error) return Response.json({ error: error.message }, { status: 400 });

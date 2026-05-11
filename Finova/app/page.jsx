@@ -296,12 +296,13 @@ const BudgetPage = memo(function BudgetPage({ income, categories, hasDebt, savin
     setError("");
     setMessage("");
     try {
+      const payload = {
+        categories: draft,
+      };
+      if (changedType) payload.changedType = changedType;
       await api("/api/budget", {
         method: "PATCH",
-        body: JSON.stringify({
-          categories: draft,
-          changedType,
-        }),
+        body: JSON.stringify(payload),
       });
       setMessage("Budget saved and backend updated.");
       await onDone();

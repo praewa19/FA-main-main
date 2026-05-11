@@ -32,6 +32,18 @@ function monthLabel(date) {
   return new Intl.DateTimeFormat("en-IN", { month: "short", timeZone: "Asia/Kolkata" }).format(date);
 }
 
+function longMonthLabel(date) {
+  return new Intl.DateTimeFormat("en-IN", {
+    month: "long",
+    year: "numeric",
+    timeZone: "Asia/Kolkata",
+  }).format(date);
+}
+
+function monthDateFromKey(key) {
+  return new Date(`${key}-01T12:00:00+05:30`);
+}
+
 function buildMonthSeries(transactions, today = new Date()) {
   const transactionMonths = transactions
     .map((transaction) => String(transaction.date || "").slice(0, 7))
@@ -73,6 +85,34 @@ function buildMonthSeries(transactions, today = new Date()) {
     bucket.expenses += amount;
   });
   return months;
+}
+
+function buildDashboardMonths(monthSeries, categories, transactions, income) {
+  return monthSeries.map((month) => {
+    const monthDate = monthDateFromKey(month.key);
+    const monthTransactions = transactions.filter((transaction) => String(transaction.date || "").slice(0, 7) === month.key);
+    const monthCategories = enrichCategories(categories, monthTransactions, monthDate);
+    const credits = monthTransactions
+      .filter((transaction) => transaction.categoryType === "credit")
+      .reduce((sum, transaction) => sum + Number(transaction.amount || 0), 0);
+    const expenses = monthTransactions
+      .filter((transaction) => transaction.categoryType !== "credit")
+      .reduce((sum, transaction) => sum + Number(transaction.amount || 0), 0);
+    const baseIncome = Number(income?.monthlyIncome || 0);
+
+    return {
+      key: month.key,
+      label: longMonthLabel(monthDate),
+      shortLabel: month.label,
+      categories: monthCategories,
+      totals: {
+        credits,
+        expenses,
+        income: baseIncome + credits,
+        netBalance: baseIncome + credits - expenses,
+      },
+    };
+  });
 }
 
 function buildTopSpendDate(transactions) {
@@ -172,6 +212,7 @@ export async function GET() {
   const recs = recommendations({ categories: enriched, monthlyIncome: income.monthlyIncome, mode: profile.mode });
   const health = financialHealthScore({ categories: enriched, habits, monthlyIncome: income.monthlyIncome });
   const monthSeries = buildMonthSeries(transactions);
+  const dashboardMonths = buildDashboardMonths(monthSeries, adjustedCategories, transactions, income);
   const healthTrend = monthSeries.map((month, index) => {
     const monthDate = new Date(`${month.key}-01T12:00:00+05:30`);
     const monthTransactions = transactions.filter((transaction) => String(transaction.date || "").slice(0, 7) === month.key);
@@ -224,6 +265,7 @@ export async function GET() {
     streak,
     analytics: {
       monthSeries,
+      dashboardMonths,
       healthTrend,
       topSpendDate,
     },

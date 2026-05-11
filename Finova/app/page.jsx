@@ -10,6 +10,8 @@ import {
   CalendarDays,
   CircleGauge,
   Check,
+  ChevronLeft,
+  ChevronRight,
   CircleDollarSign,
   Coins,
   CreditCard,
@@ -107,9 +109,36 @@ function GoalMini({ goal }) {
   );
 }
 
-const DashboardPage = memo(function DashboardPage({ categories, chartData, pieData, health }) {
+const DashboardPage = memo(function DashboardPage({
+  categories,
+  chartData,
+  pieData,
+  health,
+  activeMonthLabel,
+  canGoPrevious,
+  canGoNext,
+  onPreviousMonth,
+  onNextMonth,
+}) {
   return (
     <div className="dashboard-page dashboard-clean">
+      <section className="panel section dashboard-month-panel">
+        <div className="dashboard-month-heading">
+          <div>
+            <p className="eyebrow">Dashboard month</p>
+            <h2>{activeMonthLabel}</h2>
+            <p className="hint">Budget allocation, pace tracking, and spending distribution are scoped to this month only.</p>
+          </div>
+          <div className="dashboard-month-actions">
+            <button className="btn secondary icon" type="button" onClick={onPreviousMonth} title="Previous month" disabled={!canGoPrevious}>
+              <ChevronLeft size={18} />
+            </button>
+            <button className="btn secondary icon" type="button" onClick={onNextMonth} title="Next month" disabled={!canGoNext}>
+              <ChevronRight size={18} />
+            </button>
+          </div>
+        </div>
+      </section>
       <section className="dashboard-core-grid">
         <div className="panel section health-metric dashboard-health-card">
           <div className="score-wrap">
@@ -203,11 +232,12 @@ const BudgetPage = memo(function BudgetPage({ income, categories, hasDebt, savin
     return next;
   }
 
-  const [incomeForm, setIncomeForm] = useState({ incomePeriod: income.period, incomeAmount: String(income.amount) });
-  const [editingIncome, setEditingIncome] = useState(false);
   const [draft, setDraft] = useState(() => buildDraft(categories));
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
+  const [aiInsights, setAiInsights] = useState([]);
+  const [insightsLoading, setInsightsLoading] = useState(false);
+  const [insightsError, setInsightsError] = useState("");
   const total = draft.reduce((sum, category) => sum + Number(category.percentage || 0), 0);
   const chartData = draft.map((category) => ({
     type: category.type,
@@ -217,9 +247,36 @@ const BudgetPage = memo(function BudgetPage({ income, categories, hasDebt, savin
   }));
 
   useEffect(() => {
-    setIncomeForm({ incomePeriod: income.period, incomeAmount: String(income.amount) });
     setDraft(buildDraft(categories));
   }, [categories, income, savingsGuidance]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function fetchInsights() {
+      setInsightsLoading(true);
+      setInsightsError("");
+      try {
+        const result = await api("/api/assistant/insights", {
+          method: "POST",
+          body: JSON.stringify({ page: "budget" }),
+        });
+        if (!cancelled) setAiInsights(result.insights || []);
+      } catch (err) {
+        if (!cancelled) {
+          setAiInsights([]);
+          setInsightsError(err.message);
+        }
+      } finally {
+        if (!cancelled) setInsightsLoading(false);
+      }
+    }
+
+    fetchInsights();
+    return () => {
+      cancelled = true;
+    };
+  }, [categories, income.monthlyIncome, savingsGuidance?.recommendedMonthlySavings]);
 
   function updateCategory(index, patch) {
     setMessage("");
@@ -242,14 +299,11 @@ const BudgetPage = memo(function BudgetPage({ income, categories, hasDebt, savin
       await api("/api/budget", {
         method: "PATCH",
         body: JSON.stringify({
-          ...incomeForm,
-          incomeAmount: parseMoneyInput(incomeForm.incomeAmount),
           categories: draft,
           changedType,
         }),
       });
       setMessage("Budget saved and backend updated.");
-      setEditingIncome(false);
       await onDone();
     } catch (err) {
       setError(err.message);
@@ -279,20 +333,7 @@ const BudgetPage = memo(function BudgetPage({ income, categories, hasDebt, savin
               <div className="income-display">{formatMoney(income.monthlyIncome)}</div>
               <p className="hint">{income.period === "annual" ? "Converted from annual income" : "Current monthly income"}</p>
             </div>
-            <button className="btn secondary" type="button" onClick={() => setEditingIncome(!editingIncome)}><Pencil size={16} />Edit</button>
           </div>
-          {editingIncome && (
-            <div className="income-edit-panel">
-              <div className="grid-2 compact">
-                <select value={incomeForm.incomePeriod} onChange={(event) => setIncomeForm({ ...incomeForm, incomePeriod: event.target.value })}>
-                  <option value="monthly">Monthly</option>
-                  <option value="annual">Annual</option>
-                </select>
-                <input value={formatMoneyInput(incomeForm.incomeAmount)} inputMode="decimal" onChange={(event) => setIncomeForm({ ...incomeForm, incomeAmount: formatMoneyInput(event.target.value) })} />
-              </div>
-              <button className="btn" type="button" onClick={() => save()}><Save size={17} />Save income</button>
-            </div>
-          )}
         </div>
         <BudgetAllocationChart pieData={chartData} />
       </section>
@@ -344,17 +385,7 @@ const BudgetPage = memo(function BudgetPage({ income, categories, hasDebt, savin
         {message && <div className="alert info"><Check size={18} /><span>{message}</span></div>}
         {error && <div className="alert risk"><AlertTriangle size={18} /><span>{error}</span></div>}
       </section>
-      <section className="panel section ai-panel">
-        <div className="ai-icon"><Sparkles size={22} /></div>
-        <div>
-          <h2>AI Insights</h2>
-          <ul className="ai-bullet-list">
-            <li>Essentials: keep core expenses within the planned allocation.</li>
-            <li>Savings: target {Math.round((savingsGuidance?.recommendedSavingsRate || 0.2) * 100)}% monthly, about {formatMoney(savingsGuidance?.recommendedMonthlySavings || 0)}.</li>
-            {recommendations.slice(0, 2).map((rec) => <li key={rec.id}>{rec.title}: {rec.body}</li>)}
-          </ul>
-        </div>
-      </section>
+      <AIInsightsPanel insights={aiInsights} loading={insightsLoading} error={insightsError} />
     </div>
   );
 });
@@ -1311,43 +1342,49 @@ const navItems = [
 const Dashboard = memo(function Dashboard({ user, summary, activeTab, isTabPending, onTab, onRefresh, onLogout, onDone }) {
   if (!summary) return null;
   const { profile, income, categories, ranking, recommendations, health, alerts, metals, streak, habits, transactions, debtObligations, emiReminders, goals = [], savingsTargets = [], customHabits = [], totals, savingsGuidance, analytics } = summary;
-  const dashboardCategories = useMemo(() => {
-    const goalCategories = goals.map((goal) => {
-      const accent = goalAccent(goal);
-      const target = Number(goal.target || 0);
-      const current = Number(goal.current || 0);
-      const remaining = Math.max(0, target - current);
-      return {
-        id: `goal-category-${goal.id}`,
-        type: goalCategoryType(goal.id),
-        label: goal.name,
-        priority: "Goal",
-        monthlyLimit: target,
-        spent: current,
-        expected: current,
-        remaining,
-        progress: target > 0 ? Math.min(100, Math.round((current / target) * 100)) : 0,
-        status: current >= target ? "green" : remaining <= target * 0.25 ? "orange" : "green",
-        color: accent.color,
-      };
-    });
-    return [...categories, ...goalCategories];
-  }, [categories, goals]);
-  const chartData = useMemo(() => categories.map((category) => ({
+  const dashboardMonths = useMemo(() => {
+    if (analytics?.dashboardMonths?.length) return analytics.dashboardMonths;
+    const fallbackKey = monthKeyFromDate(new Date());
+    return [{
+      key: fallbackKey,
+      label: monthLabelFromKey(fallbackKey),
+      shortLabel: monthLabelFromKey(fallbackKey),
+      categories,
+      totals: totals || { credits: 0, expenses: 0, income: income.monthlyIncome, netBalance: income.monthlyIncome },
+    }];
+  }, [analytics?.dashboardMonths, categories, income.monthlyIncome, totals]);
+  const [dashboardMonthIndex, setDashboardMonthIndex] = useState(() => Math.max(0, dashboardMonths.length - 1));
+
+  useEffect(() => {
+    setDashboardMonthIndex(Math.max(0, dashboardMonths.length - 1));
+  }, [dashboardMonths]);
+
+  const selectedDashboardMonth = dashboardMonths[Math.min(dashboardMonthIndex, Math.max(0, dashboardMonths.length - 1))]
+    || dashboardMonths[dashboardMonths.length - 1]
+    || null;
+  const dashboardCategories = selectedDashboardMonth?.categories || categories;
+  const activeDashboardMonthLabel = selectedDashboardMonth?.label || monthLabelFromKey(monthKeyFromDate(new Date())) || "This month";
+  const chartData = useMemo(() => dashboardCategories.map((category) => ({
     name: category.label.replace(" / ", " "),
     Actual: category.spent,
     Expected: category.expected,
     Limit: category.monthlyLimit,
     type: category.type,
-  })), [categories]);
-  const pieData = useMemo(() => dashboardCategories.map((category) => ({
+  })), [dashboardCategories]);
+  const pieData = useMemo(() => dashboardCategories
+    .filter((category) => Number(category.spent || 0) > 0 || Number(category.monthlyLimit || 0) > 0)
+    .map((category) => ({
     name: category.label,
     value: category.monthlyLimit,
     spent: category.spent,
     type: category.type,
     color: category.color || categoryColors[category.type],
-    percent: income.monthlyIncome ? (category.monthlyLimit / income.monthlyIncome) * 100 : 0,
-  })), [dashboardCategories, income.monthlyIncome]);
+    percent: selectedDashboardMonth?.totals?.expenses > 0
+      ? (Number(category.spent || 0) / selectedDashboardMonth.totals.expenses) * 100
+      : income.monthlyIncome
+        ? (category.monthlyLimit / income.monthlyIncome) * 100
+        : 0,
+  })), [dashboardCategories, income.monthlyIncome, selectedDashboardMonth]);
   const activeLabel = navItems.find(([key]) => key === activeTab)?.[2] || "Overview";
   const [overlayMessagesByPage, setOverlayMessagesByPage] = useState({});
   const [overlayDraft, setOverlayDraft] = useState("");
@@ -1555,7 +1592,7 @@ const Dashboard = memo(function Dashboard({ user, summary, activeTab, isTabPendi
           <button className="btn secondary icon sidebar-menu" type="button" title="Menu"><Menu size={18} /></button>
           <div className="workspace-title-block">
             <h1>{activeLabel}</h1>
-            <p className="hint">{profile.name}'s financial workspace</p>
+            <p className="hint">{activeTab === "dashboard" ? `${profile.name}'s financial workspace | ${activeDashboardMonthLabel}` : `${profile.name}'s financial workspace`}</p>
           </div>
           <div className="top-actions">
             <button className="btn secondary icon" title="Refresh dashboard" onClick={onRefresh}><RefreshCcw size={17} /></button>
@@ -1564,7 +1601,19 @@ const Dashboard = memo(function Dashboard({ user, summary, activeTab, isTabPendi
           </div>
         </header>
         <div className={`tab-panel ${isTabPending ? "pending" : ""}`}>
-          {activeTab === "dashboard" && <DashboardPage categories={dashboardCategories} chartData={chartData} pieData={pieData} health={health} />}
+          {activeTab === "dashboard" && (
+            <DashboardPage
+              categories={dashboardCategories}
+              chartData={chartData}
+              pieData={pieData}
+              health={health}
+              activeMonthLabel={activeDashboardMonthLabel}
+              canGoPrevious={dashboardMonthIndex > 0}
+              canGoNext={dashboardMonthIndex < dashboardMonths.length - 1}
+              onPreviousMonth={() => setDashboardMonthIndex((current) => Math.max(0, current - 1))}
+              onNextMonth={() => setDashboardMonthIndex((current) => Math.min(dashboardMonths.length - 1, current + 1))}
+            />
+          )}
           {activeTab === "budget" && <BudgetPage income={income} categories={categories} hasDebt={profile.hasDebt} savingsGuidance={savingsGuidance} recommendations={recommendations} onDone={onDone} />}
           {activeTab === "transactions" && <TransactionsPage transactions={transactions || []} categories={categories} goals={goals} emiReminders={emiReminders || []} totals={totals} income={income} onDone={onDone} />}
           {activeTab === "goals" && <GoalsPage goals={goals} onDone={onDone} />}
@@ -2600,8 +2649,7 @@ const AnalyticsPage = memo(function AnalyticsPage({ categories, transactions, he
                 <Activity size={16} />
               </div>
               <strong>{topSpendDate?.date ? formatShortIndiaDate(topSpendDate.date) : "None"}</strong>
-              <div className="analytics-mini-track"><span style={{ width: `${topSpendDate?.spending && totalSpend ? Math.max(8, Math.round((topSpendDate.spending / totalSpend) * 100)) : 8}%` }} /></div>
-              <small>{topSpendDate?.spending ? formatMoney(topSpendDate.spending) : "No spending recorded."}</small>
+              <small>{topSpendDate?.spending ? `${formatMoney(topSpendDate.spending)} spent on that date.` : "No spending recorded."}</small>
             </div>
             <div className="analytics-signal-card">
               <div className="analytics-signal-head">
@@ -2609,7 +2657,6 @@ const AnalyticsPage = memo(function AnalyticsPage({ categories, transactions, he
                 <CreditCard size={16} />
               </div>
               <strong>{recurringNotes.length || 0}</strong>
-              <div className="analytics-mini-track"><span style={{ width: `${Math.max(8, Math.min(100, recurringNotes.length * 24))}%` }} /></div>
               <small>{recurringNotes.length ? recurringNotes.map((item) => `${item.note} x${item.count}`).join(" • ") : "No repeated spending notes detected."}</small>
             </div>
             <div className="analytics-signal-card">
@@ -2618,7 +2665,6 @@ const AnalyticsPage = memo(function AnalyticsPage({ categories, transactions, he
                 <TrendingUp size={16} />
               </div>
               <strong>{monthDelta >= 0 ? "Expense pressure rose" : "Expense pressure eased"}</strong>
-              <div className="analytics-mini-track"><span style={{ width: `${Math.max(8, Math.min(100, income.monthlyIncome > 0 ? Math.round((Math.abs(monthDelta) / income.monthlyIncome) * 100) : 8))}%` }} /></div>
               <small>{monthDelta >= 0 ? `${formatMoney(Math.abs(monthDelta))} more spent than last month.` : `${formatMoney(Math.abs(monthDelta))} less spent than last month.`}</small>
             </div>
           </div>
@@ -2968,7 +3014,7 @@ const InvestmentsPage = memo(function InvestmentsPage() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [portfolio.holdings, portfolio.positions]);
 
   const selectedRangeMetrics = portfolio.summary?.rangeMetrics?.[selectedRange] || { change: 0, changePercent: 0 };
   const hasHoldings = (portfolio.holdings || []).length > 0;

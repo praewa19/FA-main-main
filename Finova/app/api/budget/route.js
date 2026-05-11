@@ -129,24 +129,30 @@ export async function PATCH(request) {
 
     const { data: currentRows, error: currentCategoryError } = await supabase.from("categories").select("*").eq("user_id", current.id);
     if (currentCategoryError) return Response.json({ error: currentCategoryError.message }, { status: 400 });
-    const requestedIds = new Set(normalized.map((category) => category.id).filter(Boolean));
-    const deleteIds = (currentRows || []).filter((row) => !requestedIds.has(row.id)).map((row) => row.id);
+    const existingRows = currentRows || [];
+    const existingById = new Map(existingRows.map((row) => [row.id, row]));
+    const existingByType = new Map(existingRows.map((row) => [row.type, row]));
+    const rows = normalized.map((category) => {
+      const existing = (category.id && existingById.get(category.id)) || existingByType.get(category.type);
+      return fromCategory({
+        id: existing?.id || category.id || id("cat"),
+        userId: current.id,
+        planId,
+        type: category.type,
+        label: category.label,
+        priority: category.priority || categoryMeta[category.type]?.priority || "Medium",
+        weight: categoryMeta[category.type]?.weight || 1,
+        monthlyLimit: Math.round(nextMonthlyIncome * (category.percentage / 100)),
+        createdAt: existing?.created_at || nowIso(),
+      });
+    });
+    const retainedIds = new Set(rows.map((row) => row.id));
+    const deleteIds = existingRows.filter((row) => !retainedIds.has(row.id)).map((row) => row.id);
     if (deleteIds.length) {
       const { error: deleteError } = await supabase.from("categories").delete().in("id", deleteIds).eq("user_id", current.id);
       if (deleteError) return Response.json({ error: deleteError.message }, { status: 400 });
     }
 
-    const rows = normalized.map((category) => fromCategory({
-      id: category.id || id("cat"),
-      userId: current.id,
-      planId,
-      type: category.type,
-      label: category.label,
-      priority: category.priority || categoryMeta[category.type]?.priority || "Medium",
-      weight: categoryMeta[category.type]?.weight || 1,
-      monthlyLimit: Math.round(nextMonthlyIncome * (category.percentage / 100)),
-      createdAt: nowIso(),
-    }));
     const { data, error } = await supabase.from("categories").upsert(rows, { onConflict: "id" }).select("*");
     if (error) return Response.json({ error: error.message }, { status: 400 });
     return Response.json({ categories: (data || []).map(toCategory) });

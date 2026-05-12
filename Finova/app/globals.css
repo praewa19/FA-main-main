@@ -4587,6 +4587,10 @@ select {
   background: #94a3b8;
 }
 
+.pace-dot.cap {
+  background: #cbd5e1;
+}
+
 .analytics-page-redesign {
   gap: 26px;
 }

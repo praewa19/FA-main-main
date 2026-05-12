@@ -119,6 +119,7 @@ const DashboardPage = memo(function DashboardPage({
   canGoNext,
   onPreviousMonth,
   onNextMonth,
+  isHistoricalMonth = false,
 }) {
   return (
     <div className="dashboard-page dashboard-clean">
@@ -151,7 +152,7 @@ const DashboardPage = memo(function DashboardPage({
         <BudgetAllocationList categories={categories} />
       </section>
       <section className="analytics-grid">
-        <MonthlyPaceTrackerChart chartData={chartData} />
+        <MonthlyPaceTrackerChart chartData={chartData} isHistoricalMonth={isHistoricalMonth} activeMonthLabel={activeMonthLabel} />
         <CategoryDistributionChart pieData={pieData} />
       </section>
     </div>
@@ -627,6 +628,17 @@ function formatShortIndiaDate(value = "") {
 
 function monthKeyFromDate(date = new Date()) {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
+}
+
+function currentIndiaMonthKey() {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Kolkata",
+    year: "numeric",
+    month: "2-digit",
+  }).formatToParts(new Date());
+  const year = parts.find((part) => part.type === "year")?.value;
+  const month = parts.find((part) => part.type === "month")?.value;
+  return `${year}-${month}`;
 }
 
 function monthLabelFromKey(key = "") {
@@ -1345,7 +1357,7 @@ const Dashboard = memo(function Dashboard({ user, summary, activeTab, isTabPendi
   const { profile, income, categories, ranking, recommendations, health, alerts, metals, streak, habits, transactions, debtObligations, emiReminders, goals = [], savingsTargets = [], customHabits = [], totals, savingsGuidance, analytics } = summary;
   const dashboardMonths = useMemo(() => {
     if (analytics?.dashboardMonths?.length) return analytics.dashboardMonths;
-    const fallbackKey = monthKeyFromDate(new Date());
+    const fallbackKey = currentIndiaMonthKey();
     return [{
       key: fallbackKey,
       label: monthLabelFromKey(fallbackKey),
@@ -1354,17 +1366,25 @@ const Dashboard = memo(function Dashboard({ user, summary, activeTab, isTabPendi
       totals: totals || { credits: 0, expenses: 0, income: income.monthlyIncome, netBalance: income.monthlyIncome },
     }];
   }, [analytics?.dashboardMonths, categories, income.monthlyIncome, totals]);
-  const [dashboardMonthIndex, setDashboardMonthIndex] = useState(() => Math.max(0, dashboardMonths.length - 1));
+  const currentDashboardMonthKey = useMemo(() => currentIndiaMonthKey(), []);
+  const [dashboardMonthKey, setDashboardMonthKey] = useState(() => currentDashboardMonthKey);
 
   useEffect(() => {
-    setDashboardMonthIndex(Math.max(0, dashboardMonths.length - 1));
-  }, [dashboardMonths]);
+    const currentMonthExists = dashboardMonths.some((month) => month.key === currentDashboardMonthKey);
+    setDashboardMonthKey((selectedKey) => {
+      if (selectedKey && dashboardMonths.some((month) => month.key === selectedKey)) return selectedKey;
+      if (currentMonthExists) return currentDashboardMonthKey;
+      return dashboardMonths[dashboardMonths.length - 1]?.key || currentDashboardMonthKey;
+    });
+  }, [currentDashboardMonthKey, dashboardMonths]);
 
-  const selectedDashboardMonth = dashboardMonths[Math.min(dashboardMonthIndex, Math.max(0, dashboardMonths.length - 1))]
+  const selectedDashboardMonthIndex = Math.max(0, dashboardMonths.findIndex((month) => month.key === dashboardMonthKey));
+  const selectedDashboardMonth = dashboardMonths[selectedDashboardMonthIndex]
     || dashboardMonths[dashboardMonths.length - 1]
     || null;
   const dashboardCategories = selectedDashboardMonth?.categories || categories;
-  const activeDashboardMonthLabel = selectedDashboardMonth?.label || monthLabelFromKey(monthKeyFromDate(new Date())) || "This month";
+  const activeDashboardMonthLabel = selectedDashboardMonth?.label || monthLabelFromKey(currentDashboardMonthKey) || "This month";
+  const isHistoricalDashboardMonth = Boolean(selectedDashboardMonth?.key && selectedDashboardMonth.key !== currentDashboardMonthKey);
   const chartData = useMemo(() => dashboardCategories.map((category) => ({
     name: category.label.replace(" / ", " "),
     Actual: category.spent,
@@ -1609,10 +1629,11 @@ const Dashboard = memo(function Dashboard({ user, summary, activeTab, isTabPendi
               pieData={pieData}
               health={health}
               activeMonthLabel={activeDashboardMonthLabel}
-              canGoPrevious={dashboardMonthIndex > 0}
-              canGoNext={dashboardMonthIndex < dashboardMonths.length - 1}
-              onPreviousMonth={() => setDashboardMonthIndex((current) => Math.max(0, current - 1))}
-              onNextMonth={() => setDashboardMonthIndex((current) => Math.min(dashboardMonths.length - 1, current + 1))}
+              canGoPrevious={selectedDashboardMonthIndex > 0}
+              canGoNext={selectedDashboardMonthIndex < dashboardMonths.length - 1}
+              onPreviousMonth={() => setDashboardMonthKey(dashboardMonths[Math.max(0, selectedDashboardMonthIndex - 1)]?.key || currentDashboardMonthKey)}
+              onNextMonth={() => setDashboardMonthKey(dashboardMonths[Math.min(dashboardMonths.length - 1, selectedDashboardMonthIndex + 1)]?.key || currentDashboardMonthKey)}
+              isHistoricalMonth={isHistoricalDashboardMonth}
             />
           )}
           {activeTab === "budget" && <BudgetPage income={income} categories={categories} hasDebt={profile.hasDebt} savingsGuidance={savingsGuidance} recommendations={recommendations} onDone={onDone} />}

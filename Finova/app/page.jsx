@@ -2394,6 +2394,7 @@ function SavingsCard({ target, onDone }) {
 
 const AnalyticsPage = memo(function AnalyticsPage({ categories, transactions, health, income, savingsGuidance, goals, analytics }) {
   const today = useMemo(() => new Date(), []);
+  const currentMonthKey = useMemo(() => analytics?.currentMonthKey || currentIndiaMonthKey(), [analytics?.currentMonthKey]);
   const monthFormatter = useMemo(() => new Intl.DateTimeFormat("en-IN", { month: "short", timeZone: "Asia/Kolkata" }), []);
   const fallbackMonthSeries = useMemo(() => {
     const transactionMonths = transactions
@@ -2438,17 +2439,19 @@ const AnalyticsPage = memo(function AnalyticsPage({ categories, transactions, he
     return months;
   }, [monthFormatter, today, transactions]);
   const monthSeries = analytics?.monthSeries?.length ? analytics.monthSeries : fallbackMonthSeries;
-  const currentMonth = monthSeries[monthSeries.length - 1] || { expenses: 0, savings: 0, credits: 0, goals: 0 };
-  const previousMonth = monthSeries[monthSeries.length - 2] || { expenses: 0, savings: 0, credits: 0, goals: 0 };
+  const currentMonthIndex = Math.max(0, monthSeries.findIndex((month) => month.key === currentMonthKey));
+  const currentMonth = monthSeries[currentMonthIndex] || monthSeries[monthSeries.length - 1] || { expenses: 0, savings: 0, credits: 0, goals: 0 };
+  const previousMonth = monthSeries[Math.max(0, currentMonthIndex - 1)] || { expenses: 0, savings: 0, credits: 0, goals: 0 };
+  const currentMonthTransactions = transactions.filter((transaction) => String(transaction.date || "").slice(0, 7) === currentMonth.key);
   const netBalance = income.monthlyIncome + currentMonth.credits - currentMonth.expenses;
   const savingsGap = Math.max(0, (savingsGuidance?.recommendedMonthlySavings || 0) - currentMonth.savings);
-  const weekendSpend = transactions
+  const weekendSpend = currentMonthTransactions
     .filter((transaction) => transaction.categoryType !== "credit")
     .reduce((sum, transaction) => {
       const day = new Date(`${transaction.date}T12:00:00+05:30`).getDay();
       return sum + ((day === 0 || day === 6) ? Number(transaction.amount || 0) : 0);
     }, 0);
-  const totalSpend = monthSeries.reduce((sum, month) => sum + month.expenses, 0);
+  const totalSpend = currentMonth.expenses;
   const weekendRatio = totalSpend > 0 ? Math.round((weekendSpend / totalSpend) * 100) : 0;
   const topRiskCategories = [...categories]
     .filter((category) => category.status !== "green")
@@ -2499,7 +2502,7 @@ const AnalyticsPage = memo(function AnalyticsPage({ categories, transactions, he
       : "Cash flow is stable and the month is still recoverable without sharp cuts.";
   const monthDelta = currentMonth.expenses - previousMonth.expenses;
   const savingsDelta = currentMonth.savings - previousMonth.savings;
-  const recurringNotes = Object.entries(transactions
+  const recurringNotes = Object.entries(currentMonthTransactions
     .filter((transaction) => transaction.categoryType !== "credit")
     .reduce((acc, transaction) => {
       const key = String(transaction.note || "").trim().toLowerCase();
@@ -2511,7 +2514,7 @@ const AnalyticsPage = memo(function AnalyticsPage({ categories, transactions, he
     .slice(0, 2)
     .map(([note, count]) => ({ note, count }));
   const topSpendDate = analytics?.topSpendDate || null;
-  const healthTrendData = analytics?.healthTrend?.length ? analytics.healthTrend : [{ label: monthSeries[monthSeries.length - 1]?.label || "Now", score: Number(health.score || 0) }];
+  const healthTrendData = analytics?.healthTrend?.length ? analytics.healthTrend : [{ label: currentMonth.label || "Now", score: Number(health.score || 0) }];
   const savingsRatePercent = income.monthlyIncome > 0 ? Math.max(0, Math.min(100, Math.round((currentMonth.savings / income.monthlyIncome) * 100))) : 0;
   const netBalancePercent = income.monthlyIncome > 0 ? Math.max(0, Math.min(100, Math.round((Math.max(0, netBalance) / income.monthlyIncome) * 100))) : 0;
   const healthPercent = Math.max(0, Math.min(100, Math.round(health.score || 0)));

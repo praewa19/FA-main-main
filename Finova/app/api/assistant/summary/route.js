@@ -44,16 +44,30 @@ function monthDateFromKey(key) {
   return new Date(`${key}-01T12:00:00+05:30`);
 }
 
+function currentIndiaMonthStart() {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Kolkata",
+    year: "numeric",
+    month: "2-digit",
+  }).formatToParts(new Date());
+  const year = parts.find((part) => part.type === "year")?.value;
+  const month = parts.find((part) => part.type === "month")?.value;
+  return new Date(`${year}-${month}-01T12:00:00+05:30`);
+}
+
 function buildMonthSeries(transactions, today = new Date()) {
+  const currentMonth = currentIndiaMonthStart();
   const transactionMonths = transactions
     .map((transaction) => String(transaction.date || "").slice(0, 7))
     .filter((key) => /^\d{4}-\d{2}$/.test(key))
     .sort();
   const earliestKey = transactionMonths[0];
-  const minimumStart = new Date(today.getFullYear(), today.getMonth() - 11, 1);
+  const latestKey = transactionMonths[transactionMonths.length - 1];
+  const minimumStart = new Date(currentMonth.getFullYear(), currentMonth.getMonth() - 11, 1);
   const earliestDate = earliestKey ? new Date(`${earliestKey}-01T12:00:00+05:30`) : null;
+  const latestDate = latestKey ? new Date(`${latestKey}-01T12:00:00+05:30`) : null;
   const startDate = earliestDate && earliestDate < minimumStart ? earliestDate : minimumStart;
-  const endDate = new Date(today.getFullYear(), today.getMonth(), 1);
+  const endDate = latestDate && latestDate > currentMonth ? latestDate : currentMonth;
   const months = [];
   for (const cursor = new Date(startDate); cursor <= endDate; cursor.setMonth(cursor.getMonth() + 1)) {
     const date = new Date(cursor);
@@ -206,12 +220,16 @@ export async function GET() {
     ? categories
     : categories.filter((category) => category.type !== "debt");
   const adjustedCategories = applyDebtRepaymentTarget(visibleCategories, debtObligations);
-  const enriched = enrichCategories(adjustedCategories, transactions);
+  const monthSeries = buildMonthSeries(transactions);
+  const currentMonthKey = monthSeries[monthSeries.length - 1]?.key || monthKey(currentIndiaMonthStart());
+  const currentMonthDate = monthDateFromKey(currentMonthKey);
+  const currentMonthTransactions = transactions.filter((transaction) => String(transaction.date || "").slice(0, 7) === currentMonthKey);
+  const currentMonthHabits = habits.filter((habit) => String(habit.date || "").slice(0, 7) === currentMonthKey);
+  const enriched = enrichCategories(adjustedCategories, currentMonthTransactions, currentMonthDate);
   const ranking = [...enriched].sort((a, b) => b.riskScore - a.riskScore);
   const alerts = [...budgetAlerts(enriched, income.monthlyIncome), ...debtAlerts(debtObligations)];
   const recs = recommendations({ categories: enriched, monthlyIncome: income.monthlyIncome, mode: profile.mode });
-  const health = financialHealthScore({ categories: enriched, habits, monthlyIncome: income.monthlyIncome });
-  const monthSeries = buildMonthSeries(transactions);
+  const health = financialHealthScore({ categories: enriched, habits: currentMonthHabits, monthlyIncome: income.monthlyIncome });
   const dashboardMonths = buildDashboardMonths(monthSeries, adjustedCategories, transactions, income);
   const healthTrend = monthSeries.map((month, index) => {
     const monthDate = new Date(`${month.key}-01T12:00:00+05:30`);
@@ -225,11 +243,11 @@ export async function GET() {
       score: index === monthSeries.length - 1 ? health.score : monthHealth.score,
     };
   });
-  const topSpendDate = buildTopSpendDate(transactions);
+  const topSpendDate = buildTopSpendDate(currentMonthTransactions);
   const streak = habitStreak(habits);
-  const credits = transactions.filter((transaction) => transaction.categoryType === "credit");
+  const credits = currentMonthTransactions.filter((transaction) => transaction.categoryType === "credit");
   const totalCredits = credits.reduce((sum, transaction) => sum + Number(transaction.amount || 0), 0);
-  const expenses = transactions.filter((transaction) => transaction.categoryType !== "credit");
+  const expenses = currentMonthTransactions.filter((transaction) => transaction.categoryType !== "credit");
   const totalExpenses = expenses.reduce((sum, transaction) => sum + Number(transaction.amount || 0), 0);
   const age = ageFromBirthdate(profile.birthdate);
   const recommendedSavingsRate = recommendedSavingsRateForAge(age);
@@ -264,6 +282,7 @@ export async function GET() {
     emiReminders,
     streak,
     analytics: {
+      currentMonthKey,
       monthSeries,
       dashboardMonths,
       healthTrend,
